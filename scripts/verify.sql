@@ -18,10 +18,23 @@ select
   (select count(*) from gosiyaha_dossier)  as nb_gosiyaha_dossier;
 
 -- ---------------------------------------------------------------------
--- 1. Etablissements par source — attendu (README) :
---    385 hotelrunner, 190 go_siyaha/zoho_crm, 223 mgh, 3 crees a la main
---    (un etablissement peut compter dans plusieurs sources : identifiants
---    multiples sur une meme fiche)
+-- 1a. Etablissements par source declaree (custom_fields.import_sources,
+--     tel qu'ecrit par migrate.py) — attendu (README) : 385 HR, 190 GS,
+--     223 MGH, 3 MANUEL. Un etablissement peut porter plusieurs tags.
+-- ---------------------------------------------------------------------
+select tag, count(*) as nb_etablissements
+from property p, unnest(string_to_array(
+       trim(both '[]' from replace(p.custom_fields->>'import_sources','''','')), ', '
+     )) as tag
+group by tag
+order by nb_etablissements desc;
+
+-- ---------------------------------------------------------------------
+-- 1b. Etablissements par identifiant externe REELLEMENT resolu
+--     (external_id.system) — c'est la mesure qui fait foi : l'identite
+--     passe par external_id, jamais par le tag declaratif du 1a.
+--     Attendu : mgh=223 et zoho_crm=190 collent au tag declaratif (1a) ;
+--     hotelrunner est structurellement inferieur a 385 (voir 1c).
 -- ---------------------------------------------------------------------
 select system, count(distinct property_id) as nb_etablissements
 from external_id
@@ -30,8 +43,28 @@ group by system
 order by nb_etablissements desc;
 
 -- ---------------------------------------------------------------------
--- 2. Etablissements sans aucun identifiant externe — attendu : 0 ou les
---    3 proprietes Anika ajoutees a la main (creees sans identifiant HR/GS/MGH)
+-- 1c. Ecart HotelRunner : etablissements tagges 'HR' sans identifiant
+--     hotelrunner resolu dans external_id — ecart connu et attendu
+--     (cf. supabase/migrations/..._schema.sql, commentaire sur la table
+--     external_id : "probleme 136/192 et 14/224"). PAS une anomalie de
+--     chargement : la source Zoho/HotelRunner n'a jamais fourni ces
+--     identifiants. A arbitrer (README, "Ce qui reste a faire", point 3).
+-- ---------------------------------------------------------------------
+select p.custom_fields->>'import_sources' as import_sources, count(*) as nb
+from property p
+where p.custom_fields->>'import_sources' like '%HR%'
+  and not exists (
+    select 1 from external_id e where e.property_id = p.id and e.system = 'hotelrunner'
+  )
+group by 1
+order by nb desc;
+
+-- ---------------------------------------------------------------------
+-- 2. Etablissements sans aucun identifiant externe (tous systemes) —
+--    attendu : les 3 proprietes Anika ajoutees a la main (MANUEL, sans
+--    identifiant HR/GS/MGH) + les etablissements tagges 'HR' seul dont
+--    le rapprochement HotelRunner a echoue (cf. 1c) — 139 au chargement
+--    de reference du 2026-08-25.
 -- ---------------------------------------------------------------------
 select p.code, p.name, p.lifecycle_status, p.custom_fields->>'import_sources' as import_sources
 from property p
