@@ -100,12 +100,19 @@ Deux gains obtenus au passage :
 
 ## Ce qui reste a faire avant de charger en production
 
-1. **Extraire la correspondance des noms d'API** (procedure ci-dessus). C'est le seul
-   element qui peut casser la production de livrables le jour de la bascule.
+1. ~~**Extraire la correspondance des noms d'API**~~ **Fait le 2026-08-25**, via l'API Zoho
+   CRM (`ZohoCRM_getFields` sur le module `Go_Siyaha`, id `3332272000064212014`) plutot que
+   par l'export manuel Apps Script decrit ci-dessus — memes 164 champs, sans manipulation
+   dans Zoho. Charge en base : `zoho_field_map`, 164 lignes, 61 marquees `used_by_script`.
+   Les 5 noms d'API restants de la liste des 66 utilises par les scripts (`USED_BY_SCRIPTS`
+   dans `load_field_map.py`) sont des alias construits par les scripts eux-memes
+   (`SCRIPT_ALIASES`), pas des champs Zoho : couverture complete, aucun `{{token}}` ne
+   restera visible dans un livrable.
 2. **Valider phase et responsable des 19 statuts Jira** dans la migration `seed` — les valeurs
    actuelles sont une proposition.
-3. **Arbitrer les 54 comptes Go Siyaha sans compte HotelRunner** (lignes `-G-` du classeur
-   d'appariement).
+3. **Arbitrer les 206 etablissements tagues 'HR' sans identifiant HotelRunner resolu**
+   (voir `scripts/verify.sql`, requetes 1c et 2) et les 54 comptes Go Siyaha sans compte
+   HotelRunner (lignes `-G-` du classeur d'appariement).
 4. **Renseigner l'entite de facturation** : le script met `HWS_MA` par defaut pour le Maroc.
    La Tunisie, l'Egypte et certaines proprietes marocaines relevent de `HWS_ES` — a saisir,
    jamais a deduire du pays.
