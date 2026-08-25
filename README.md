@@ -118,7 +118,15 @@ Deux gains obtenus au passage :
    jamais a deduire du pays.
 5. **Completer les prix et couts** : aucun montant d'abonnement n'existe dans les exports.
    La marge restera vide tant que le catalogue tarifaire n'est pas saisi.
-6. **RLS** : non ecrite ici. A poser avec l'authentification, avant tout acces applicatif.
+6. ~~**RLS**~~ **Faite le 2026-08-25**, migrations `..._rls.sql` et
+   `..._rls_hardening.sql`. Authentification : Supabase Auth, comptes crees
+   avec l'email professionnel de chaque membre. Trois roles (`app_role`,
+   deja presents dans `field_definition.visible_roles`) : `admin` (tout),
+   `sales` (lecture + ecriture sur les donnees metier), `support` (lecture
+   seule). Un nouveau compte Auth atterrit en `support` par defaut
+   (`app_user`, trigger `on_auth_user_created`) — un admin le promeut
+   ensuite. Aucune restriction par ligne (`sales_owner`/`csm_owner` ne sont
+   pas encore renseignes) : a affiner si besoin plus tard.
 
 ## Verification
 
