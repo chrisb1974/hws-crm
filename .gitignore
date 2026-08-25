@@ -1,0 +1,23 @@
+# Secrets — jamais commités
+.env
+.env.*
+!.env.example
+
+# Donnees clients — sources et SQL genere, jamais versionnes.
+# Le SQL de donnees se regenere avec scripts/migrate.py (voir README).
+exports/
+out/
+
+# Supabase CLI local
+supabase/.branches
+supabase/.temp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editeurs
+.DS_Store
+*.swp
