@@ -108,8 +108,15 @@ Deux gains obtenus au passage :
    dans `load_field_map.py`) sont des alias construits par les scripts eux-memes
    (`SCRIPT_ALIASES`), pas des champs Zoho : couverture complete, aucun `{{token}}` ne
    restera visible dans un livrable.
-2. **Valider phase et responsable des 19 statuts Jira** dans la migration `seed` — les valeurs
-   actuelles sont une proposition.
+2. ~~**Valider phase et responsable des 19 statuts Jira**~~ **Fait le 2026-08-26**, avec
+   Christophe. Une correction : le code `08` (ATTENTE DOSSIER PHYSIQUE - BESOIN SIGNATURE
+   HOTELIER) passe `responsible` de `HOTEL` a `HWS` — c'est HWS qui gere la relance aupres
+   de l'hotel (migration `..._jira_status_validation.sql`). Le reste des 19 est valide tel
+   quel. L'absence de `phase = 3` parmi les 19 est confirmee volontaire (pas d'oubli). 7
+   codes existent dans le picklist Zoho actuel mais n'apparaissent dans aucun des 244
+   dossiers migres (`07`, `09`, `11`, `13`, `18.1`, une variante de `20`, une variante de
+   `22`) — decision : ne pas les ajouter maintenant, `scripts/verify.sql` (requete 5) les
+   signalera de lui-meme si un dossier reel les utilise un jour.
 3. **Arbitrer les 206 etablissements tagues 'HR' sans identifiant HotelRunner resolu**
    (voir `scripts/verify.sql`, requetes 1c et 2) et les 54 comptes Go Siyaha sans compte
    HotelRunner (lignes `-G-` du classeur d'appariement).
