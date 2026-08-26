@@ -134,7 +134,11 @@ Deux gains obtenus au passage :
    Reste ouvert : d'autres proprietes marocaines peuvent relever de `HWS_ES` — jamais a
    deduire du pays, seulement sur indication explicite, au cas par cas.
 5. **Completer les prix et couts** : aucun montant d'abonnement n'existe dans les exports.
-   La marge restera vide tant que le catalogue tarifaire n'est pas saisi.
+   La marge restera vide tant que le catalogue tarifaire n'est pas saisi. Bloque le
+   2026-08-26, meme nature que le point 3 : ni `subscription.sale_price/vendor_cost`
+   (770 lignes, toutes vides) ni un prix catalogue par plan (12 plans, table `plan`) ne
+   peuvent etre devines — aucune source ne les contient. Decision (Christophe,
+   2026-08-26) : documenter et reprendre quand la grille tarifaire sera disponible.
 6. ~~**RLS**~~ **Faite le 2026-08-25**, migrations `..._rls.sql` et
    `..._rls_hardening.sql`. Authentification : Supabase Auth, comptes crees
    avec l'email professionnel de chaque membre. Trois roles (`app_role`,
