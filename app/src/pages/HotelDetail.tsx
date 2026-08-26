@@ -19,6 +19,8 @@ type GosiyahaAction = Database["public"]["Tables"]["gosiyaha_action"]["Row"];
 type GosiyahaPrerequisite =
   Database["public"]["Tables"]["gosiyaha_prerequisite"]["Row"];
 type JiraStatus = Database["public"]["Tables"]["jira_status"]["Row"];
+type Document = Database["public"]["Tables"]["document"]["Row"];
+type DocumentType = Database["public"]["Tables"]["document_type"]["Row"];
 type LifecycleStatus = Database["public"]["Enums"]["lifecycle_status"];
 type StackRole = Database["public"]["Enums"]["stack_role"];
 type MembershipStatus = Database["public"]["Enums"]["membership_status"];
@@ -73,6 +75,22 @@ const GS_ACTION_TYPE_LABEL: Record<string, string> = {
   TGS03: "TGS03",
   TGS04: "TGS04",
   EOS01: "EOS01",
+};
+
+type DocumentDraft = {
+  type_code: string;
+  filename: string;
+  drive_url: string;
+  dossier_id: string;
+  expires_at: string;
+};
+
+const EMPTY_DOCUMENT_DRAFT: DocumentDraft = {
+  type_code: "",
+  filename: "",
+  drive_url: "",
+  dossier_id: "",
+  expires_at: "",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -198,9 +216,16 @@ export function HotelDetail() {
   const [gsActions, setGsActions] = useState<GosiyahaAction[]>([]);
   const [prerequisites, setPrerequisites] = useState<GosiyahaPrerequisite[]>([]);
   const [jiraStatuses, setJiraStatuses] = useState<JiraStatus[]>([]);
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [documentTypes, setDocumentTypes] = useState<DocumentType[]>([]);
 
   const [tab, setTab] = useState<
-    "informations" | "abonnements" | "contacts" | "projets" | "gosiyaha"
+    | "informations"
+    | "abonnements"
+    | "contacts"
+    | "projets"
+    | "gosiyaha"
+    | "documents"
   >("informations");
 
   const [mode, setMode] = useState<"view" | "edit">("view");
@@ -243,6 +268,21 @@ export function HotelDetail() {
   const [savingMembershipRow, setSavingMembershipRow] = useState(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
 
+  // Onglet Documents : creation et edition en place, jamais de modale.
+  const [addingDocument, setAddingDocument] = useState(false);
+  const [newDocumentDraft, setNewDocumentDraft] = useState<DocumentDraft>(
+    EMPTY_DOCUMENT_DRAFT,
+  );
+  const [savingNewDocument, setSavingNewDocument] = useState(false);
+  const [editingDocumentId, setEditingDocumentId] = useState<string | null>(
+    null,
+  );
+  const [documentRowDraft, setDocumentRowDraft] = useState<DocumentDraft>(
+    EMPTY_DOCUMENT_DRAFT,
+  );
+  const [savingDocumentRow, setSavingDocumentRow] = useState(false);
+  const [documentsError, setDocumentsError] = useState<string | null>(null);
+
   async function loadAll() {
     if (!id) return;
     setLoading(true);
@@ -261,6 +301,8 @@ export function HotelDetail() {
       membershipRes,
       jiraStatusRes,
       dossierRes,
+      documentRes,
+      documentTypeRes,
     ] = await Promise.all([
       supabase.from("property").select("*").eq("id", id).single(),
       supabase
@@ -283,6 +325,12 @@ export function HotelDetail() {
         .select("*")
         .eq("property_id", id)
         .order("created_at", { ascending: false }),
+      supabase
+        .from("document")
+        .select("*")
+        .eq("property_id", id)
+        .order("uploaded_at", { ascending: false }),
+      supabase.from("document_type").select("*").order("code"),
     ]);
     if (propRes.error) setError(propRes.error.message);
     else setProperty(propRes.data);
@@ -298,6 +346,8 @@ export function HotelDetail() {
     setProjects(projectRes.data ?? []);
     setMemberships(membershipRes.data ?? []);
     setJiraStatuses(jiraStatusRes.data ?? []);
+    setDocuments(documentRes.data ?? []);
+    setDocumentTypes(documentTypeRes.data ?? []);
 
     const gsDossiers = dossierRes.data ?? [];
     setDossiers(gsDossiers);
@@ -552,6 +602,73 @@ export function HotelDetail() {
       .eq("id", membershipId);
     if (error) return setProjectsError(error.message);
     setMemberships((ms) => ms.filter((m) => m.id !== membershipId));
+  }
+
+  async function handleAddDocument(e: FormEvent) {
+    e.preventDefault();
+    if (!property || !newDocumentDraft.type_code) return;
+    setSavingNewDocument(true);
+    setDocumentsError(null);
+    const { data, error } = await supabase
+      .from("document")
+      .insert({
+        property_id: property.id,
+        dossier_id: newDocumentDraft.dossier_id || null,
+        type_code: newDocumentDraft.type_code,
+        filename: newDocumentDraft.filename.trim() || null,
+        drive_url: newDocumentDraft.drive_url.trim() || null,
+        expires_at: newDocumentDraft.expires_at || null,
+      })
+      .select("*")
+      .single();
+    setSavingNewDocument(false);
+    if (error) return setDocumentsError(error.message);
+    if (data) setDocuments((docs) => [data, ...docs]);
+    setAddingDocument(false);
+    setNewDocumentDraft(EMPTY_DOCUMENT_DRAFT);
+  }
+
+  function startEditDocument(d: Document) {
+    setEditingDocumentId(d.id);
+    setDocumentRowDraft({
+      type_code: d.type_code ?? "",
+      filename: d.filename ?? "",
+      drive_url: d.drive_url ?? "",
+      dossier_id: d.dossier_id ?? "",
+      expires_at: d.expires_at ?? "",
+    });
+    setDocumentsError(null);
+  }
+
+  async function handleSaveDocument(e: FormEvent) {
+    e.preventDefault();
+    if (!editingDocumentId) return;
+    setSavingDocumentRow(true);
+    setDocumentsError(null);
+    const { data, error } = await supabase
+      .from("document")
+      .update({
+        type_code: documentRowDraft.type_code || null,
+        filename: documentRowDraft.filename.trim() || null,
+        drive_url: documentRowDraft.drive_url.trim() || null,
+        dossier_id: documentRowDraft.dossier_id || null,
+        expires_at: documentRowDraft.expires_at || null,
+      })
+      .eq("id", editingDocumentId)
+      .select("*")
+      .single();
+    setSavingDocumentRow(false);
+    if (error) return setDocumentsError(error.message);
+    if (data) setDocuments((docs) => docs.map((d) => (d.id === data.id ? data : d)));
+    setEditingDocumentId(null);
+  }
+
+  async function handleDeleteDocument(documentId: string) {
+    if (!window.confirm("Supprimer ce document ?")) return;
+    setDocumentsError(null);
+    const { error } = await supabase.from("document").delete().eq("id", documentId);
+    if (error) return setDocumentsError(error.message);
+    setDocuments((docs) => docs.filter((d) => d.id !== documentId));
   }
 
   if (loading) return <p className="text-muted">Chargement…</p>;
@@ -843,6 +960,16 @@ export function HotelDetail() {
           }`}
         >
           Go Siyaha {dossiers.length}
+        </button>
+        <button
+          onClick={() => setTab("documents")}
+          className={`-mb-px border-b-2 px-1 py-2 font-medium ${
+            tab === "documents"
+              ? "border-brand text-brand"
+              : "border-transparent text-muted hover:text-ink"
+          }`}
+        >
+          Documents {documents.length}
         </button>
       </div>
 
@@ -1852,6 +1979,308 @@ export function HotelDetail() {
               );
             })
           )}
+        </div>
+      )}
+
+      {tab === "documents" && (
+        <div className="mt-6 space-y-4">
+          {documentsError && (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-danger">
+              {documentsError}
+            </p>
+          )}
+
+          <div className="overflow-x-auto rounded-xl border border-line bg-white">
+            {documents.length === 0 ? (
+              <p className="p-6 text-sm text-muted">Aucun document enregistré.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="border-b border-line bg-paper text-left text-xs uppercase tracking-wide text-muted">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Type</th>
+                    <th className="px-4 py-3 font-medium">Fichier</th>
+                    <th className="px-4 py-3 font-medium">Dossier Go Siyaha</th>
+                    <th className="px-4 py-3 font-medium">Ajouté le</th>
+                    <th className="px-4 py-3 font-medium">Expire le</th>
+                    {canWrite && <th className="px-4 py-3 font-medium" />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {documents.map((d) => {
+                    const docType = documentTypes.find((t) => t.code === d.type_code);
+                    const expired = d.expires_at && new Date(d.expires_at) < new Date();
+                    return editingDocumentId === d.id ? (
+                      <tr key={d.id} className="border-b border-line last:border-0 bg-paper">
+                        <td colSpan={canWrite ? 6 : 5} className="px-4 py-3">
+                          <form
+                            onSubmit={handleSaveDocument}
+                            className="grid grid-cols-2 gap-3 lg:grid-cols-4"
+                          >
+                            <select
+                              required
+                              value={documentRowDraft.type_code}
+                              onChange={(e) =>
+                                setDocumentRowDraft((dr) => ({
+                                  ...dr,
+                                  type_code: e.target.value,
+                                }))
+                              }
+                              className={inlineInputClass}
+                            >
+                              <option value="">— Type —</option>
+                              {documentTypes.map((t) => (
+                                <option key={t.code} value={t.code}>
+                                  {t.label_fr ?? t.code}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              placeholder="Nom du fichier"
+                              value={documentRowDraft.filename}
+                              onChange={(e) =>
+                                setDocumentRowDraft((dr) => ({
+                                  ...dr,
+                                  filename: e.target.value,
+                                }))
+                              }
+                              className={inlineInputClass}
+                            />
+                            <input
+                              type="url"
+                              placeholder="URL (Drive…)"
+                              value={documentRowDraft.drive_url}
+                              onChange={(e) =>
+                                setDocumentRowDraft((dr) => ({
+                                  ...dr,
+                                  drive_url: e.target.value,
+                                }))
+                              }
+                              className={inlineInputClass}
+                            />
+                            <select
+                              value={documentRowDraft.dossier_id}
+                              onChange={(e) =>
+                                setDocumentRowDraft((dr) => ({
+                                  ...dr,
+                                  dossier_id: e.target.value,
+                                }))
+                              }
+                              className={inlineInputClass}
+                            >
+                              <option value="">— Aucun dossier —</option>
+                              {dossiers.map((ds) => (
+                                <option key={ds.id} value={ds.id}>
+                                  {ds.code ?? ds.id}
+                                </option>
+                              ))}
+                            </select>
+                            <label className="col-span-2 text-xs text-muted lg:col-span-4">
+                              Expire le
+                              <input
+                                type="date"
+                                value={documentRowDraft.expires_at}
+                                onChange={(e) =>
+                                  setDocumentRowDraft((dr) => ({
+                                    ...dr,
+                                    expires_at: e.target.value,
+                                  }))
+                                }
+                                className={inlineInputClass}
+                              />
+                            </label>
+                            <div className="col-span-2 flex gap-2 lg:col-span-4">
+                              <button
+                                type="submit"
+                                disabled={savingDocumentRow}
+                                className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                              >
+                                {savingDocumentRow ? "…" : "Enregistrer"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingDocumentId(null)}
+                                className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-paper"
+                              >
+                                Annuler
+                              </button>
+                            </div>
+                          </form>
+                        </td>
+                      </tr>
+                    ) : (
+                      <tr key={d.id} className="border-b border-line last:border-0 hover:bg-paper">
+                        <td className="px-4 py-3 text-ink">
+                          {docType?.label_fr ?? d.type_code ?? "—"}
+                          {docType?.blocks_deliverable && (
+                            <span
+                              title="Bloque la génération des livrables Go Siyaha"
+                              className="ml-1 text-danger"
+                            >
+                              ●
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {d.drive_url ? (
+                            <a
+                              href={d.drive_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-brand hover:underline"
+                            >
+                              {d.filename ?? d.drive_url}
+                            </a>
+                          ) : (
+                            <span className="text-ink">{d.filename ?? "—"}</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-muted">
+                          {dossiers.find((ds) => ds.id === d.dossier_id)?.code ?? "—"}
+                        </td>
+                        <td className="px-4 py-3 text-muted">
+                          {d.uploaded_at
+                            ? new Date(d.uploaded_at).toLocaleDateString("fr-FR")
+                            : "—"}
+                        </td>
+                        <td
+                          className={`px-4 py-3 ${expired ? "font-medium text-danger" : "text-muted"}`}
+                        >
+                          {d.expires_at
+                            ? new Date(d.expires_at).toLocaleDateString("fr-FR")
+                            : "—"}
+                        </td>
+                        {canWrite && (
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => startEditDocument(d)}
+                              className="mr-3 text-xs text-brand hover:underline"
+                            >
+                              Modifier
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDocument(d.id)}
+                              className="text-xs text-danger hover:underline"
+                            >
+                              Supprimer
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {canWrite &&
+            (addingDocument ? (
+              <form
+                onSubmit={handleAddDocument}
+                className="rounded-xl border border-line bg-white p-5"
+              >
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
+                  Nouveau document
+                </h2>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <select
+                    required
+                    value={newDocumentDraft.type_code}
+                    onChange={(e) =>
+                      setNewDocumentDraft((dr) => ({
+                        ...dr,
+                        type_code: e.target.value,
+                      }))
+                    }
+                    className={inlineInputClass}
+                  >
+                    <option value="">— Type —</option>
+                    {documentTypes.map((t) => (
+                      <option key={t.code} value={t.code}>
+                        {t.label_fr ?? t.code}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    placeholder="Nom du fichier"
+                    value={newDocumentDraft.filename}
+                    onChange={(e) =>
+                      setNewDocumentDraft((dr) => ({ ...dr, filename: e.target.value }))
+                    }
+                    className={inlineInputClass}
+                  />
+                  <input
+                    type="url"
+                    placeholder="URL (Drive…)"
+                    value={newDocumentDraft.drive_url}
+                    onChange={(e) =>
+                      setNewDocumentDraft((dr) => ({ ...dr, drive_url: e.target.value }))
+                    }
+                    className={inlineInputClass}
+                  />
+                  <select
+                    value={newDocumentDraft.dossier_id}
+                    onChange={(e) =>
+                      setNewDocumentDraft((dr) => ({
+                        ...dr,
+                        dossier_id: e.target.value,
+                      }))
+                    }
+                    className={inlineInputClass}
+                  >
+                    <option value="">— Aucun dossier —</option>
+                    {dossiers.map((ds) => (
+                      <option key={ds.id} value={ds.id}>
+                        {ds.code ?? ds.id}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="col-span-2 text-xs text-muted lg:col-span-4">
+                    Expire le
+                    <input
+                      type="date"
+                      value={newDocumentDraft.expires_at}
+                      onChange={(e) =>
+                        setNewDocumentDraft((dr) => ({
+                          ...dr,
+                          expires_at: e.target.value,
+                        }))
+                      }
+                      className={inlineInputClass}
+                    />
+                  </label>
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={savingNewDocument}
+                    className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                  >
+                    {savingNewDocument ? "…" : "Enregistrer"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddingDocument(false);
+                      setNewDocumentDraft(EMPTY_DOCUMENT_DRAFT);
+                    }}
+                    className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-paper"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAddingDocument(true)}
+                className="w-full rounded-md border border-dashed border-line px-3 py-3 text-sm text-muted hover:bg-paper"
+              >
+                + Ajouter un document
+              </button>
+            ))}
         </div>
       )}
     </div>
