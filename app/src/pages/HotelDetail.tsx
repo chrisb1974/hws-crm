@@ -11,10 +11,27 @@ type Plan = Database["public"]["Tables"]["plan"]["Row"];
 type Product = Database["public"]["Tables"]["product"]["Row"];
 type Vendor = Database["public"]["Tables"]["vendor"]["Row"];
 type StackRow = Database["public"]["Views"]["v_property_stack"]["Row"];
+type ContactRole = Database["public"]["Tables"]["contact_role"]["Row"];
 type LifecycleStatus = Database["public"]["Enums"]["lifecycle_status"];
 type StackRole = Database["public"]["Enums"]["stack_role"];
 type LegalEntityOption = { id: string; legal_name: string };
 type GroupOption = { id: string; name: string };
+
+type ContactDraft = {
+  full_name: string;
+  job_title: string;
+  email: string;
+  phone: string;
+  roles: string[];
+};
+
+const EMPTY_CONTACT_DRAFT: ContactDraft = {
+  full_name: "",
+  job_title: "",
+  email: "",
+  phone: "",
+  roles: [],
+};
 
 const STATUS_LABEL: Record<string, string> = {
   prospect: "Prospect",
@@ -132,7 +149,11 @@ export function HotelDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [tab, setTab] = useState<"informations" | "abonnements">("informations");
+  const [contactRoles, setContactRoles] = useState<ContactRole[]>([]);
+
+  const [tab, setTab] = useState<"informations" | "abonnements" | "contacts">(
+    "informations",
+  );
 
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -148,6 +169,17 @@ export function HotelDetail() {
   });
   const [savingContact, setSavingContact] = useState(false);
 
+  // Onglet Contacts : creation et edition en place, jamais de modale.
+  const [addingContactInTab, setAddingContactInTab] = useState(false);
+  const [newContactDraft, setNewContactDraft] =
+    useState<ContactDraft>(EMPTY_CONTACT_DRAFT);
+  const [savingNewContact, setSavingNewContact] = useState(false);
+  const [editingContactId, setEditingContactId] = useState<string | null>(null);
+  const [contactRowDraft, setContactRowDraft] =
+    useState<ContactDraft>(EMPTY_CONTACT_DRAFT);
+  const [savingContactRow, setSavingContactRow] = useState(false);
+  const [contactsError, setContactsError] = useState<string | null>(null);
+
   async function loadAll() {
     if (!id) return;
     setLoading(true);
@@ -156,6 +188,7 @@ export function HotelDetail() {
       legalRes,
       groupRes,
       contactRes,
+      contactRoleRes,
       stackRes,
       subRes,
       planRes,
@@ -169,6 +202,7 @@ export function HotelDetail() {
         .order("legal_name"),
       supabase.from("hotel_group").select("id, name").order("name"),
       supabase.from("contact").select("*").eq("property_id", id),
+      supabase.from("contact_role").select("*").order("code"),
       supabase.from("v_property_stack").select("*").eq("property_id", id),
       supabase.from("subscription").select("*").eq("property_id", id),
       supabase.from("plan").select("*"),
@@ -180,6 +214,7 @@ export function HotelDetail() {
     setLegalEntities(legalRes.data ?? []);
     setGroups(groupRes.data ?? []);
     setContacts(contactRes.data ?? []);
+    setContactRoles(contactRoleRes.data ?? []);
     setStackRows(stackRes.data ?? []);
     setSubscriptions(subRes.data ?? []);
     setPlans(planRes.data ?? []);
@@ -266,6 +301,85 @@ export function HotelDetail() {
     if (data) setContacts((c) => [...c, data]);
     setAddingContact(false);
     setContactDraft({ full_name: "", job_title: "", email: "", phone: "" });
+  }
+
+  function toggleDraftRole(
+    draft: ContactDraft,
+    setter: (d: ContactDraft) => void,
+    code: string,
+  ) {
+    const has = draft.roles.includes(code);
+    setter({
+      ...draft,
+      roles: has ? draft.roles.filter((r) => r !== code) : [...draft.roles, code],
+    });
+  }
+
+  async function handleAddContactInTab(e: FormEvent) {
+    e.preventDefault();
+    if (!property) return;
+    setSavingNewContact(true);
+    setContactsError(null);
+    const { data, error } = await supabase
+      .from("contact")
+      .insert({
+        property_id: property.id,
+        full_name: newContactDraft.full_name.trim() || null,
+        job_title: newContactDraft.job_title.trim() || null,
+        email: newContactDraft.email.trim() || null,
+        phone: newContactDraft.phone.trim() || null,
+        roles: newContactDraft.roles,
+      })
+      .select("*")
+      .single();
+    setSavingNewContact(false);
+    if (error) return setContactsError(error.message);
+    if (data) setContacts((c) => [...c, data]);
+    setAddingContactInTab(false);
+    setNewContactDraft(EMPTY_CONTACT_DRAFT);
+  }
+
+  function startEditContactRow(c: Contact) {
+    setEditingContactId(c.id);
+    setContactRowDraft({
+      full_name: c.full_name ?? "",
+      job_title: c.job_title ?? "",
+      email: c.email ?? "",
+      phone: c.phone ?? "",
+      roles: c.roles ?? [],
+    });
+    setContactsError(null);
+  }
+
+  async function handleSaveContactRow(e: FormEvent) {
+    e.preventDefault();
+    if (!editingContactId) return;
+    setSavingContactRow(true);
+    setContactsError(null);
+    const { data, error } = await supabase
+      .from("contact")
+      .update({
+        full_name: contactRowDraft.full_name.trim() || null,
+        job_title: contactRowDraft.job_title.trim() || null,
+        email: contactRowDraft.email.trim() || null,
+        phone: contactRowDraft.phone.trim() || null,
+        roles: contactRowDraft.roles,
+      })
+      .eq("id", editingContactId)
+      .select("*")
+      .single();
+    setSavingContactRow(false);
+    if (error) return setContactsError(error.message);
+    if (data) setContacts((cs) => cs.map((c) => (c.id === data.id ? data : c)));
+    setEditingContactId(null);
+  }
+
+  async function handleDeleteContact(contactId: string) {
+    if (!window.confirm("Supprimer ce contact ?")) return;
+    setContactsError(null);
+    const { error } = await supabase.from("contact").delete().eq("id", contactId);
+    if (error) return setContactsError(error.message);
+    setContacts((cs) => cs.filter((c) => c.id !== contactId));
   }
 
   if (loading) return <p className="text-muted">Chargement…</p>;
@@ -527,6 +641,16 @@ export function HotelDetail() {
           }`}
         >
           Abonnements {subscriptions.length}
+        </button>
+        <button
+          onClick={() => setTab("contacts")}
+          className={`-mb-px border-b-2 px-1 py-2 font-medium ${
+            tab === "contacts"
+              ? "border-brand text-brand"
+              : "border-transparent text-muted hover:text-ink"
+          }`}
+        >
+          Contacts {contacts.length}
         </button>
       </div>
 
@@ -885,6 +1009,244 @@ export function HotelDetail() {
               </tbody>
             </table>
           )}
+        </div>
+      )}
+
+      {tab === "contacts" && (
+        <div className="mt-6 space-y-4">
+          {contactsError && (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-danger">
+              {contactsError}
+            </p>
+          )}
+
+          <div className="overflow-x-auto rounded-xl border border-line bg-white">
+            {contacts.length === 0 ? (
+              <p className="p-6 text-sm text-muted">Aucun contact enregistré.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="border-b border-line bg-paper text-left text-xs uppercase tracking-wide text-muted">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Nom</th>
+                    <th className="px-4 py-3 font-medium">Fonction</th>
+                    <th className="px-4 py-3 font-medium">Rôles</th>
+                    <th className="px-4 py-3 font-medium">Email</th>
+                    <th className="px-4 py-3 font-medium">Téléphone</th>
+                    {canWrite && <th className="px-4 py-3 font-medium" />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {contacts.map((c) =>
+                    editingContactId === c.id ? (
+                      <tr key={c.id} className="border-b border-line last:border-0 bg-paper">
+                        <td colSpan={canWrite ? 6 : 5} className="px-4 py-3">
+                          <form
+                            onSubmit={handleSaveContactRow}
+                            className="grid grid-cols-2 gap-3 lg:grid-cols-4"
+                          >
+                            <input
+                              required
+                              placeholder="Nom complet"
+                              value={contactRowDraft.full_name}
+                              onChange={(e) =>
+                                setContactRowDraft((d) => ({ ...d, full_name: e.target.value }))
+                              }
+                              className={inlineInputClass}
+                            />
+                            <input
+                              placeholder="Fonction"
+                              value={contactRowDraft.job_title}
+                              onChange={(e) =>
+                                setContactRowDraft((d) => ({ ...d, job_title: e.target.value }))
+                              }
+                              className={inlineInputClass}
+                            />
+                            <input
+                              type="email"
+                              placeholder="Email"
+                              value={contactRowDraft.email}
+                              onChange={(e) =>
+                                setContactRowDraft((d) => ({ ...d, email: e.target.value }))
+                              }
+                              className={inlineInputClass}
+                            />
+                            <input
+                              placeholder="Téléphone"
+                              value={contactRowDraft.phone}
+                              onChange={(e) =>
+                                setContactRowDraft((d) => ({ ...d, phone: e.target.value }))
+                              }
+                              className={inlineInputClass}
+                            />
+                            <div className="col-span-2 flex flex-wrap gap-3 text-xs text-ink lg:col-span-4">
+                              {contactRoles.map((r) => (
+                                <label key={r.code} className="flex items-center gap-1.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={contactRowDraft.roles.includes(r.code)}
+                                    onChange={() =>
+                                      toggleDraftRole(contactRowDraft, setContactRowDraft, r.code)
+                                    }
+                                  />
+                                  {r.label_fr ?? r.code}
+                                </label>
+                              ))}
+                            </div>
+                            <div className="col-span-2 flex gap-2 lg:col-span-4">
+                              <button
+                                type="submit"
+                                disabled={savingContactRow}
+                                className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                              >
+                                {savingContactRow ? "…" : "Enregistrer"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingContactId(null)}
+                                className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-paper"
+                              >
+                                Annuler
+                              </button>
+                            </div>
+                          </form>
+                        </td>
+                      </tr>
+                    ) : (
+                      <tr key={c.id} className="border-b border-line last:border-0 hover:bg-paper">
+                        <td className="px-4 py-3 text-ink">{c.full_name ?? "—"}</td>
+                        <td className="px-4 py-3 text-muted">{c.job_title ?? "—"}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {(c.roles ?? []).length === 0 ? (
+                              <span className="text-muted">—</span>
+                            ) : (
+                              c.roles!.map((code) => (
+                                <span
+                                  key={code}
+                                  className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-medium text-neutral-700"
+                                >
+                                  {contactRoles.find((r) => r.code === code)?.label_fr ?? code}
+                                </span>
+                              ))
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-muted">{c.email ?? "—"}</td>
+                        <td className="px-4 py-3 text-muted">{c.phone ?? "—"}</td>
+                        {canWrite && (
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => startEditContactRow(c)}
+                              className="mr-3 text-xs text-brand hover:underline"
+                            >
+                              Modifier
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteContact(c.id)}
+                              className="text-xs text-danger hover:underline"
+                            >
+                              Supprimer
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ),
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {canWrite &&
+            (addingContactInTab ? (
+              <form
+                onSubmit={handleAddContactInTab}
+                className="rounded-xl border border-line bg-white p-5"
+              >
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
+                  Nouveau contact
+                </h2>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <input
+                    required
+                    placeholder="Nom complet"
+                    value={newContactDraft.full_name}
+                    onChange={(e) =>
+                      setNewContactDraft((d) => ({ ...d, full_name: e.target.value }))
+                    }
+                    className={inlineInputClass}
+                  />
+                  <input
+                    placeholder="Fonction"
+                    value={newContactDraft.job_title}
+                    onChange={(e) =>
+                      setNewContactDraft((d) => ({ ...d, job_title: e.target.value }))
+                    }
+                    className={inlineInputClass}
+                  />
+                  <input
+                    type="email"
+                    placeholder="Email"
+                    value={newContactDraft.email}
+                    onChange={(e) =>
+                      setNewContactDraft((d) => ({ ...d, email: e.target.value }))
+                    }
+                    className={inlineInputClass}
+                  />
+                  <input
+                    placeholder="Téléphone"
+                    value={newContactDraft.phone}
+                    onChange={(e) =>
+                      setNewContactDraft((d) => ({ ...d, phone: e.target.value }))
+                    }
+                    className={inlineInputClass}
+                  />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-3 text-xs text-ink">
+                  {contactRoles.map((r) => (
+                    <label key={r.code} className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={newContactDraft.roles.includes(r.code)}
+                        onChange={() =>
+                          toggleDraftRole(newContactDraft, setNewContactDraft, r.code)
+                        }
+                      />
+                      {r.label_fr ?? r.code}
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={savingNewContact}
+                    className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                  >
+                    {savingNewContact ? "…" : "Enregistrer"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddingContactInTab(false);
+                      setNewContactDraft(EMPTY_CONTACT_DRAFT);
+                    }}
+                    className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-paper"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAddingContactInTab(true)}
+                className="w-full rounded-md border border-dashed border-line px-3 py-3 text-sm text-muted hover:bg-paper"
+              >
+                + Ajouter un contact
+              </button>
+            ))}
         </div>
       )}
     </div>
