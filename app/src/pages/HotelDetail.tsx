@@ -14,6 +14,11 @@ type StackRow = Database["public"]["Views"]["v_property_stack"]["Row"];
 type ContactRole = Database["public"]["Tables"]["contact_role"]["Row"];
 type Project = Database["public"]["Tables"]["project"]["Row"];
 type ProjectMembership = Database["public"]["Tables"]["project_membership"]["Row"];
+type GosiyahaDossier = Database["public"]["Tables"]["gosiyaha_dossier"]["Row"];
+type GosiyahaAction = Database["public"]["Tables"]["gosiyaha_action"]["Row"];
+type GosiyahaPrerequisite =
+  Database["public"]["Tables"]["gosiyaha_prerequisite"]["Row"];
+type JiraStatus = Database["public"]["Tables"]["jira_status"]["Row"];
 type LifecycleStatus = Database["public"]["Enums"]["lifecycle_status"];
 type StackRole = Database["public"]["Enums"]["stack_role"];
 type MembershipStatus = Database["public"]["Enums"]["membership_status"];
@@ -62,6 +67,12 @@ const MEMBERSHIP_STATUS_COLOR: Record<string, string> = {
   member: "bg-emerald-100 text-emerald-800",
   prospect: "border border-line text-muted",
   left: "bg-neutral-200 text-neutral-500",
+};
+
+const GS_ACTION_TYPE_LABEL: Record<string, string> = {
+  TGS03: "TGS03",
+  TGS04: "TGS04",
+  EOS01: "EOS01",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -183,9 +194,13 @@ export function HotelDetail() {
   const [contactRoles, setContactRoles] = useState<ContactRole[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [memberships, setMemberships] = useState<ProjectMembership[]>([]);
+  const [dossiers, setDossiers] = useState<GosiyahaDossier[]>([]);
+  const [gsActions, setGsActions] = useState<GosiyahaAction[]>([]);
+  const [prerequisites, setPrerequisites] = useState<GosiyahaPrerequisite[]>([]);
+  const [jiraStatuses, setJiraStatuses] = useState<JiraStatus[]>([]);
 
   const [tab, setTab] = useState<
-    "informations" | "abonnements" | "contacts" | "projets"
+    "informations" | "abonnements" | "contacts" | "projets" | "gosiyaha"
   >("informations");
 
   const [mode, setMode] = useState<"view" | "edit">("view");
@@ -244,6 +259,8 @@ export function HotelDetail() {
       vendorRes,
       projectRes,
       membershipRes,
+      jiraStatusRes,
+      dossierRes,
     ] = await Promise.all([
       supabase.from("property").select("*").eq("id", id).single(),
       supabase
@@ -260,6 +277,12 @@ export function HotelDetail() {
       supabase.from("vendor").select("*"),
       supabase.from("project").select("*").order("name"),
       supabase.from("project_membership").select("*").eq("property_id", id),
+      supabase.from("jira_status").select("*").order("code"),
+      supabase
+        .from("gosiyaha_dossier")
+        .select("*")
+        .eq("property_id", id)
+        .order("created_at", { ascending: false }),
     ]);
     if (propRes.error) setError(propRes.error.message);
     else setProperty(propRes.data);
@@ -274,6 +297,32 @@ export function HotelDetail() {
     setVendors(vendorRes.data ?? []);
     setProjects(projectRes.data ?? []);
     setMemberships(membershipRes.data ?? []);
+    setJiraStatuses(jiraStatusRes.data ?? []);
+
+    const gsDossiers = dossierRes.data ?? [];
+    setDossiers(gsDossiers);
+    const dossierIds = gsDossiers.map((d) => d.id);
+    if (dossierIds.length > 0) {
+      const { data: actionData } = await supabase
+        .from("gosiyaha_action")
+        .select("*")
+        .in("dossier_id", dossierIds);
+      setGsActions(actionData ?? []);
+      const actionIds = (actionData ?? []).map((a) => a.id);
+      if (actionIds.length > 0) {
+        const { data: prereqData } = await supabase
+          .from("gosiyaha_prerequisite")
+          .select("*")
+          .in("action_id", actionIds);
+        setPrerequisites(prereqData ?? []);
+      } else {
+        setPrerequisites([]);
+      }
+    } else {
+      setGsActions([]);
+      setPrerequisites([]);
+    }
+
     setLoading(false);
   }
 
@@ -784,6 +833,16 @@ export function HotelDetail() {
           }`}
         >
           Projets {memberships.length}
+        </button>
+        <button
+          onClick={() => setTab("gosiyaha")}
+          className={`-mb-px border-b-2 px-1 py-2 font-medium ${
+            tab === "gosiyaha"
+              ? "border-brand text-brand"
+              : "border-transparent text-muted hover:text-ink"
+          }`}
+        >
+          Go Siyaha {dossiers.length}
         </button>
       </div>
 
@@ -1656,8 +1715,153 @@ export function HotelDetail() {
             ))}
         </div>
       )}
+
+      {tab === "gosiyaha" && (
+        <div className="mt-6 space-y-4">
+          <p className="text-xs text-muted">
+            Lecture seule — Zoho reste la source de vérité pendant la
+            transition.
+          </p>
+          {dossiers.length === 0 ? (
+            <p className="rounded-xl border border-line bg-white p-6 text-sm text-muted">
+              Aucun dossier Go Siyaha enregistré.
+            </p>
+          ) : (
+            dossiers.map((d) => {
+              const dActions = gsActions.filter((a) => a.dossier_id === d.id);
+              const account = gsDataField(d.data, "Go Siyaha Account");
+              const rc = gsDataField(d.data, "Nom Societe RC");
+              const signataire = gsDataField(d.data, "Nom Signataire");
+              return (
+                <div
+                  key={d.id}
+                  className="rounded-xl border border-line bg-white p-5"
+                >
+                  <div className="flex items-baseline justify-between gap-4">
+                    <h2 className="text-sm font-semibold text-ink">
+                      {d.code ?? "Dossier sans nom"}
+                    </h2>
+                    {d.created_at && (
+                      <span className="shrink-0 text-xs text-muted">
+                        {new Date(d.created_at).toLocaleDateString("fr-FR")}
+                      </span>
+                    )}
+                  </div>
+                  {(account || rc || signataire) && (
+                    <p className="mt-1 text-xs text-muted">
+                      {[
+                        account && `Compte : ${account}`,
+                        rc && `RC : ${rc}`,
+                        signataire && `Signataire : ${signataire}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </p>
+                  )}
+
+                  {dActions.length === 0 ? (
+                    <p className="mt-3 text-sm text-muted">
+                      Aucune action enregistrée sur ce dossier.
+                    </p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {dActions.map((a) => {
+                        const jira = a.jira_status_code
+                          ? jiraStatuses.find((j) => j.code === a.jira_status_code)
+                          : null;
+                        const aPrereqs = prerequisites.filter(
+                          (p) => p.action_id === a.id,
+                        );
+                        return (
+                          <div
+                            key={a.id}
+                            className="rounded-lg border border-line bg-paper p-3 text-sm"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-medium uppercase text-neutral-700">
+                                {GS_ACTION_TYPE_LABEL[a.action_type] ?? a.action_type}
+                              </span>
+                              {jira && (
+                                <span className="rounded-full border border-line px-2 py-0.5 text-xs text-ink">
+                                  {jira.code} — {jira.label}
+                                </span>
+                              )}
+                              {a.cancelled && (
+                                <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-danger">
+                                  Annulé
+                                </span>
+                              )}
+                              {a.market_number && (
+                                <span className="text-xs text-muted">
+                                  Marché n° {a.market_number}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-muted sm:grid-cols-3">
+                              <span>
+                                Montant :{" "}
+                                {a.amount != null
+                                  ? `${a.amount} ${a.currency ?? ""}`
+                                  : "—"}
+                              </span>
+                              <span>
+                                Facture 10% :{" "}
+                                {a.invoice_10_number ??
+                                  (a.invoice_10_amount != null
+                                    ? `${a.invoice_10_amount} ${a.currency ?? ""}`
+                                    : "—")}
+                                {a.invoice_10_paid_on &&
+                                  ` (payée le ${new Date(
+                                    a.invoice_10_paid_on,
+                                  ).toLocaleDateString("fr-FR")})`}
+                              </span>
+                              <span>
+                                Facture 90% :{" "}
+                                {a.invoice_90_number ??
+                                  (a.invoice_90_amount != null
+                                    ? `${a.invoice_90_amount} ${a.currency ?? ""}`
+                                    : "—")}
+                                {a.invoice_90_paid_on &&
+                                  ` (payée le ${new Date(
+                                    a.invoice_90_paid_on,
+                                  ).toLocaleDateString("fr-FR")})`}
+                              </span>
+                            </div>
+                            {aPrereqs.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {aPrereqs.map((p) => (
+                                  <span
+                                    key={p.id}
+                                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                                      p.satisfied
+                                        ? "bg-emerald-100 text-emerald-800"
+                                        : "bg-red-50 text-danger"
+                                    }`}
+                                  >
+                                    {p.satisfied ? "✓" : "✗"} {p.label}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
     </div>
   );
+}
+
+function gsDataField(data: unknown, key: string): string | null {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return null;
+  const value = (data as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 const inlineInputClass =
