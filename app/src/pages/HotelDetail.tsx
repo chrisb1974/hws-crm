@@ -12,8 +12,11 @@ type Product = Database["public"]["Tables"]["product"]["Row"];
 type Vendor = Database["public"]["Tables"]["vendor"]["Row"];
 type StackRow = Database["public"]["Views"]["v_property_stack"]["Row"];
 type ContactRole = Database["public"]["Tables"]["contact_role"]["Row"];
+type Project = Database["public"]["Tables"]["project"]["Row"];
+type ProjectMembership = Database["public"]["Tables"]["project_membership"]["Row"];
 type LifecycleStatus = Database["public"]["Enums"]["lifecycle_status"];
 type StackRole = Database["public"]["Enums"]["stack_role"];
+type MembershipStatus = Database["public"]["Enums"]["membership_status"];
 type LegalEntityOption = { id: string; legal_name: string };
 type GroupOption = { id: string; name: string };
 
@@ -31,6 +34,34 @@ const EMPTY_CONTACT_DRAFT: ContactDraft = {
   email: "",
   phone: "",
   roles: [],
+};
+
+type MembershipDraft = {
+  project_id: string;
+  status: MembershipStatus;
+  since: string;
+  until: string;
+  source: string;
+};
+
+const EMPTY_MEMBERSHIP_DRAFT: MembershipDraft = {
+  project_id: "",
+  status: "member",
+  since: "",
+  until: "",
+  source: "",
+};
+
+const MEMBERSHIP_STATUS_LABEL: Record<string, string> = {
+  member: "Membre",
+  prospect: "Prospect",
+  left: "Sorti",
+};
+
+const MEMBERSHIP_STATUS_COLOR: Record<string, string> = {
+  member: "bg-emerald-100 text-emerald-800",
+  prospect: "border border-line text-muted",
+  left: "bg-neutral-200 text-neutral-500",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -150,10 +181,12 @@ export function HotelDetail() {
   const [error, setError] = useState<string | null>(null);
 
   const [contactRoles, setContactRoles] = useState<ContactRole[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [memberships, setMemberships] = useState<ProjectMembership[]>([]);
 
-  const [tab, setTab] = useState<"informations" | "abonnements" | "contacts">(
-    "informations",
-  );
+  const [tab, setTab] = useState<
+    "informations" | "abonnements" | "contacts" | "projets"
+  >("informations");
 
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -180,6 +213,21 @@ export function HotelDetail() {
   const [savingContactRow, setSavingContactRow] = useState(false);
   const [contactsError, setContactsError] = useState<string | null>(null);
 
+  // Onglet Projets : creation et edition en place, jamais de modale.
+  const [addingMembership, setAddingMembership] = useState(false);
+  const [newMembershipDraft, setNewMembershipDraft] = useState<MembershipDraft>(
+    EMPTY_MEMBERSHIP_DRAFT,
+  );
+  const [savingNewMembership, setSavingNewMembership] = useState(false);
+  const [editingMembershipId, setEditingMembershipId] = useState<number | null>(
+    null,
+  );
+  const [membershipRowDraft, setMembershipRowDraft] = useState<MembershipDraft>(
+    EMPTY_MEMBERSHIP_DRAFT,
+  );
+  const [savingMembershipRow, setSavingMembershipRow] = useState(false);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+
   async function loadAll() {
     if (!id) return;
     setLoading(true);
@@ -194,6 +242,8 @@ export function HotelDetail() {
       planRes,
       productRes,
       vendorRes,
+      projectRes,
+      membershipRes,
     ] = await Promise.all([
       supabase.from("property").select("*").eq("id", id).single(),
       supabase
@@ -208,6 +258,8 @@ export function HotelDetail() {
       supabase.from("plan").select("*"),
       supabase.from("product").select("*"),
       supabase.from("vendor").select("*"),
+      supabase.from("project").select("*").order("name"),
+      supabase.from("project_membership").select("*").eq("property_id", id),
     ]);
     if (propRes.error) setError(propRes.error.message);
     else setProperty(propRes.data);
@@ -220,6 +272,8 @@ export function HotelDetail() {
     setPlans(planRes.data ?? []);
     setProducts(productRes.data ?? []);
     setVendors(vendorRes.data ?? []);
+    setProjects(projectRes.data ?? []);
+    setMemberships(membershipRes.data ?? []);
     setLoading(false);
   }
 
@@ -380,6 +434,75 @@ export function HotelDetail() {
     const { error } = await supabase.from("contact").delete().eq("id", contactId);
     if (error) return setContactsError(error.message);
     setContacts((cs) => cs.filter((c) => c.id !== contactId));
+  }
+
+  async function handleAddMembership(e: FormEvent) {
+    e.preventDefault();
+    if (!property || !newMembershipDraft.project_id) return;
+    setSavingNewMembership(true);
+    setProjectsError(null);
+    const { data, error } = await supabase
+      .from("project_membership")
+      .insert({
+        property_id: property.id,
+        project_id: Number(newMembershipDraft.project_id),
+        status: newMembershipDraft.status,
+        since: newMembershipDraft.since || null,
+        until: newMembershipDraft.until || null,
+        source: newMembershipDraft.source.trim() || null,
+      })
+      .select("*")
+      .single();
+    setSavingNewMembership(false);
+    if (error) return setProjectsError(error.message);
+    if (data) setMemberships((m) => [...m, data]);
+    setAddingMembership(false);
+    setNewMembershipDraft(EMPTY_MEMBERSHIP_DRAFT);
+  }
+
+  function startEditMembership(m: ProjectMembership) {
+    setEditingMembershipId(m.id);
+    setMembershipRowDraft({
+      project_id: m.project_id.toString(),
+      status: m.status,
+      since: m.since ?? "",
+      until: m.until ?? "",
+      source: m.source ?? "",
+    });
+    setProjectsError(null);
+  }
+
+  async function handleSaveMembership(e: FormEvent) {
+    e.preventDefault();
+    if (!editingMembershipId) return;
+    setSavingMembershipRow(true);
+    setProjectsError(null);
+    const { data, error } = await supabase
+      .from("project_membership")
+      .update({
+        status: membershipRowDraft.status,
+        since: membershipRowDraft.since || null,
+        until: membershipRowDraft.until || null,
+        source: membershipRowDraft.source.trim() || null,
+      })
+      .eq("id", editingMembershipId)
+      .select("*")
+      .single();
+    setSavingMembershipRow(false);
+    if (error) return setProjectsError(error.message);
+    if (data) setMemberships((ms) => ms.map((m) => (m.id === data.id ? data : m)));
+    setEditingMembershipId(null);
+  }
+
+  async function handleDeleteMembership(membershipId: number) {
+    if (!window.confirm("Retirer cet établissement du projet ?")) return;
+    setProjectsError(null);
+    const { error } = await supabase
+      .from("project_membership")
+      .delete()
+      .eq("id", membershipId);
+    if (error) return setProjectsError(error.message);
+    setMemberships((ms) => ms.filter((m) => m.id !== membershipId));
   }
 
   if (loading) return <p className="text-muted">Chargement…</p>;
@@ -651,6 +774,16 @@ export function HotelDetail() {
           }`}
         >
           Contacts {contacts.length}
+        </button>
+        <button
+          onClick={() => setTab("projets")}
+          className={`-mb-px border-b-2 px-1 py-2 font-medium ${
+            tab === "projets"
+              ? "border-brand text-brand"
+              : "border-transparent text-muted hover:text-ink"
+          }`}
+        >
+          Projets {memberships.length}
         </button>
       </div>
 
@@ -1245,6 +1378,280 @@ export function HotelDetail() {
                 className="w-full rounded-md border border-dashed border-line px-3 py-3 text-sm text-muted hover:bg-paper"
               >
                 + Ajouter un contact
+              </button>
+            ))}
+        </div>
+      )}
+
+      {tab === "projets" && (
+        <div className="mt-6 space-y-4">
+          {projectsError && (
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-danger">
+              {projectsError}
+            </p>
+          )}
+
+          <div className="overflow-x-auto rounded-xl border border-line bg-white">
+            {memberships.length === 0 ? (
+              <p className="p-6 text-sm text-muted">
+                Aucun rattachement à un projet.
+              </p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="border-b border-line bg-paper text-left text-xs uppercase tracking-wide text-muted">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Projet</th>
+                    <th className="px-4 py-3 font-medium">Type</th>
+                    <th className="px-4 py-3 font-medium">Statut</th>
+                    <th className="px-4 py-3 font-medium">Depuis</th>
+                    <th className="px-4 py-3 font-medium">Jusqu'à</th>
+                    <th className="px-4 py-3 font-medium">Source</th>
+                    {canWrite && <th className="px-4 py-3 font-medium" />}
+                  </tr>
+                </thead>
+                <tbody>
+                  {memberships.map((m) => {
+                    const project = projects.find((p) => p.id === m.project_id);
+                    return editingMembershipId === m.id ? (
+                      <tr key={m.id} className="border-b border-line last:border-0 bg-paper">
+                        <td colSpan={canWrite ? 7 : 6} className="px-4 py-3">
+                          <form
+                            onSubmit={handleSaveMembership}
+                            className="grid grid-cols-2 gap-3 lg:grid-cols-4"
+                          >
+                            <div className="col-span-2 text-sm text-ink lg:col-span-1">
+                              {project?.name ?? `#${m.project_id}`}
+                            </div>
+                            <select
+                              value={membershipRowDraft.status}
+                              onChange={(e) =>
+                                setMembershipRowDraft((d) => ({
+                                  ...d,
+                                  status: e.target.value as MembershipStatus,
+                                }))
+                              }
+                              className={inlineInputClass}
+                            >
+                              {Object.entries(MEMBERSHIP_STATUS_LABEL).map(
+                                ([value, label]) => (
+                                  <option key={value} value={value}>
+                                    {label}
+                                  </option>
+                                ),
+                              )}
+                            </select>
+                            <input
+                              type="date"
+                              value={membershipRowDraft.since}
+                              onChange={(e) =>
+                                setMembershipRowDraft((d) => ({
+                                  ...d,
+                                  since: e.target.value,
+                                }))
+                              }
+                              className={inlineInputClass}
+                            />
+                            <input
+                              type="date"
+                              value={membershipRowDraft.until}
+                              onChange={(e) =>
+                                setMembershipRowDraft((d) => ({
+                                  ...d,
+                                  until: e.target.value,
+                                }))
+                              }
+                              className={inlineInputClass}
+                            />
+                            <input
+                              placeholder="Source"
+                              value={membershipRowDraft.source}
+                              onChange={(e) =>
+                                setMembershipRowDraft((d) => ({
+                                  ...d,
+                                  source: e.target.value,
+                                }))
+                              }
+                              className={`${inlineInputClass} col-span-2 lg:col-span-4`}
+                            />
+                            <div className="col-span-2 flex gap-2 lg:col-span-4">
+                              <button
+                                type="submit"
+                                disabled={savingMembershipRow}
+                                className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                              >
+                                {savingMembershipRow ? "…" : "Enregistrer"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingMembershipId(null)}
+                                className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-paper"
+                              >
+                                Annuler
+                              </button>
+                            </div>
+                          </form>
+                        </td>
+                      </tr>
+                    ) : (
+                      <tr key={m.id} className="border-b border-line last:border-0 hover:bg-paper">
+                        <td className="px-4 py-3 text-ink">
+                          {project?.name ?? `#${m.project_id}`}
+                          {project?.code && (
+                            <span className="ml-1 text-xs text-muted">
+                              ({project.code})
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-muted">{project?.type ?? "—"}</td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                              MEMBERSHIP_STATUS_COLOR[m.status] ??
+                              "bg-neutral-100 text-neutral-700"
+                            }`}
+                          >
+                            {MEMBERSHIP_STATUS_LABEL[m.status] ?? m.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-muted">
+                          {m.since
+                            ? new Date(m.since).toLocaleDateString("fr-FR")
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-muted">
+                          {m.until
+                            ? new Date(m.until).toLocaleDateString("fr-FR")
+                            : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-muted">{m.source ?? "—"}</td>
+                        {canWrite && (
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => startEditMembership(m)}
+                              className="mr-3 text-xs text-brand hover:underline"
+                            >
+                              Modifier
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteMembership(m.id)}
+                              className="text-xs text-danger hover:underline"
+                            >
+                              Retirer
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {canWrite &&
+            (addingMembership ? (
+              <form
+                onSubmit={handleAddMembership}
+                className="rounded-xl border border-line bg-white p-5"
+              >
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">
+                  Rattacher à un projet
+                </h2>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  <select
+                    required
+                    value={newMembershipDraft.project_id}
+                    onChange={(e) =>
+                      setNewMembershipDraft((d) => ({
+                        ...d,
+                        project_id: e.target.value,
+                      }))
+                    }
+                    className={`${inlineInputClass} col-span-2`}
+                  >
+                    <option value="">— Choisir un projet —</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.code})
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={newMembershipDraft.status}
+                    onChange={(e) =>
+                      setNewMembershipDraft((d) => ({
+                        ...d,
+                        status: e.target.value as MembershipStatus,
+                      }))
+                    }
+                    className={inlineInputClass}
+                  >
+                    {Object.entries(MEMBERSHIP_STATUS_LABEL).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    placeholder="Source"
+                    value={newMembershipDraft.source}
+                    onChange={(e) =>
+                      setNewMembershipDraft((d) => ({ ...d, source: e.target.value }))
+                    }
+                    className={inlineInputClass}
+                  />
+                  <label className="text-xs text-muted">
+                    Depuis
+                    <input
+                      type="date"
+                      value={newMembershipDraft.since}
+                      onChange={(e) =>
+                        setNewMembershipDraft((d) => ({ ...d, since: e.target.value }))
+                      }
+                      className={inlineInputClass}
+                    />
+                  </label>
+                  <label className="text-xs text-muted">
+                    Jusqu'à
+                    <input
+                      type="date"
+                      value={newMembershipDraft.until}
+                      onChange={(e) =>
+                        setNewMembershipDraft((d) => ({ ...d, until: e.target.value }))
+                      }
+                      className={inlineInputClass}
+                    />
+                  </label>
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={savingNewMembership}
+                    className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                  >
+                    {savingNewMembership ? "…" : "Enregistrer"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddingMembership(false);
+                      setNewMembershipDraft(EMPTY_MEMBERSHIP_DRAFT);
+                    }}
+                    className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-paper"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setAddingMembership(true)}
+                className="w-full rounded-md border border-dashed border-line px-3 py-3 text-sm text-muted hover:bg-paper"
+              >
+                + Rattacher à un projet
               </button>
             ))}
         </div>
