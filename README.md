@@ -119,10 +119,20 @@ Deux gains obtenus au passage :
    signalera de lui-meme si un dossier reel les utilise un jour.
 3. **Arbitrer les 206 etablissements tagues 'HR' sans identifiant HotelRunner resolu**
    (voir `scripts/verify.sql`, requetes 1c et 2) et les 54 comptes Go Siyaha sans compte
-   HotelRunner (lignes `-G-` du classeur d'appariement).
-4. **Renseigner l'entite de facturation** : le script met `HWS_MA` par defaut pour le Maroc.
-   La Tunisie, l'Egypte et certaines proprietes marocaines relevent de `HWS_ES` — a saisir,
-   jamais a deduire du pays.
+   HotelRunner (lignes `-G-` du classeur d'appariement). Cause identifiee (2026-08-26) :
+   `migrate.py` ne cree un `external_id` `hotelrunner` que si la colonne
+   `HotelRunner ID (Not HWS)` de `ALL_Active_HR.xlsx` est renseignee — les 206 sont des
+   lignes ou cette colonne etait vide a la source, pas un probleme de rapprochement entre
+   sources. Reste bloque : ni `exports/ALL_Active_HR.xlsx`, ni le classeur d'appariement,
+   ni un acces HotelRunner ne sont disponibles dans cette session. Decision (Christophe,
+   2026-08-26) : documenter et reprendre plus tard avec les fichiers sources.
+4. **Renseigner l'entite de facturation** — en cours, premiere passe faite le 2026-08-26
+   (migration `..._billing_entity_tn_eg.sql`). `migrate.py` codait `country="MA"` en dur
+   pour tout, sans jamais lire le vrai pays. 10 proprietes identifiees par leur nom comme
+   etant en Tunisie ou en Egypte, confirmees par Christophe : `country` corrige (TN/EG) et
+   `billing_entity_code` passe a `HWS_ES`. 626 proprietes restent `MA`/`HWS_MA` par defaut.
+   Reste ouvert : d'autres proprietes marocaines peuvent relever de `HWS_ES` — jamais a
+   deduire du pays, seulement sur indication explicite, au cas par cas.
 5. **Completer les prix et couts** : aucun montant d'abonnement n'existe dans les exports.
    La marge restera vide tant que le catalogue tarifaire n'est pas saisi.
 6. ~~**RLS**~~ **Faite le 2026-08-25**, migrations `..._rls.sql` et
