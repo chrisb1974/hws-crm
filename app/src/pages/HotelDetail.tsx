@@ -6,7 +6,13 @@ import { useAuth } from "../contexts/AuthContext";
 
 type Property = Database["public"]["Tables"]["property"]["Row"];
 type Contact = Database["public"]["Tables"]["contact"]["Row"];
+type Subscription = Database["public"]["Tables"]["subscription"]["Row"];
+type Plan = Database["public"]["Tables"]["plan"]["Row"];
+type Product = Database["public"]["Tables"]["product"]["Row"];
+type Vendor = Database["public"]["Tables"]["vendor"]["Row"];
+type StackRow = Database["public"]["Views"]["v_property_stack"]["Row"];
 type LifecycleStatus = Database["public"]["Enums"]["lifecycle_status"];
+type StackRole = Database["public"]["Enums"]["stack_role"];
 type LegalEntityOption = { id: string; legal_name: string };
 type GroupOption = { id: string; name: string };
 
@@ -36,6 +42,44 @@ const LIFECYCLE_OPTIONS: { value: LifecycleStatus; label: string }[] = [
   { value: "churned", label: "Churné" },
   { value: "program_only", label: "Programme seul" },
 ];
+
+const STACK_ROLE_ORDER: StackRole[] = [
+  "PMS",
+  "CM",
+  "BE",
+  "SITE",
+  "PAYMENT",
+  "ADDON",
+  "SERVICE",
+];
+
+const STACK_ROLE_LABEL: Record<string, string> = {
+  PMS: "PMS",
+  CM: "CM",
+  BE: "BE",
+  SITE: "Site",
+  PAYMENT: "Paiement",
+  ADDON: "Add-on",
+  SERVICE: "Service",
+};
+
+const SUB_STATUS_LABEL: Record<string, string> = {
+  prospect: "Prospect",
+  trial: "Essai",
+  active: "Actif",
+  suspended: "Suspendu",
+  terminated: "Terminé",
+  migrated: "Migré",
+};
+
+const SUB_STATUS_COLOR: Record<string, string> = {
+  prospect: "border border-line text-muted",
+  trial: "bg-sky-100 text-sky-800",
+  active: "bg-emerald-100 text-emerald-800",
+  suspended: "bg-orange-100 text-orange-800",
+  terminated: "bg-neutral-200 text-neutral-500",
+  migrated: "bg-neutral-200 text-neutral-500",
+};
 
 type Draft = {
   name: string;
@@ -80,8 +124,15 @@ export function HotelDetail() {
   const [legalEntities, setLegalEntities] = useState<LegalEntityOption[]>([]);
   const [groups, setGroups] = useState<GroupOption[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [stackRows, setStackRows] = useState<StackRow[]>([]);
+  const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
+  const [plans, setPlans] = useState<Plan[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [vendors, setVendors] = useState<Vendor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [tab, setTab] = useState<"informations" | "abonnements">("informations");
 
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -100,7 +151,17 @@ export function HotelDetail() {
   async function loadAll() {
     if (!id) return;
     setLoading(true);
-    const [propRes, legalRes, groupRes, contactRes] = await Promise.all([
+    const [
+      propRes,
+      legalRes,
+      groupRes,
+      contactRes,
+      stackRes,
+      subRes,
+      planRes,
+      productRes,
+      vendorRes,
+    ] = await Promise.all([
       supabase.from("property").select("*").eq("id", id).single(),
       supabase
         .from("legal_entity")
@@ -108,12 +169,22 @@ export function HotelDetail() {
         .order("legal_name"),
       supabase.from("hotel_group").select("id, name").order("name"),
       supabase.from("contact").select("*").eq("property_id", id),
+      supabase.from("v_property_stack").select("*").eq("property_id", id),
+      supabase.from("subscription").select("*").eq("property_id", id),
+      supabase.from("plan").select("*"),
+      supabase.from("product").select("*"),
+      supabase.from("vendor").select("*"),
     ]);
     if (propRes.error) setError(propRes.error.message);
     else setProperty(propRes.data);
     setLegalEntities(legalRes.data ?? []);
     setGroups(groupRes.data ?? []);
     setContacts(contactRes.data ?? []);
+    setStackRows(stackRes.data ?? []);
+    setSubscriptions(subRes.data ?? []);
+    setPlans(planRes.data ?? []);
+    setProducts(productRes.data ?? []);
+    setVendors(vendorRes.data ?? []);
     setLoading(false);
   }
 
@@ -238,6 +309,17 @@ export function HotelDetail() {
     });
   }
 
+  function describeSubscription(s: Subscription) {
+    const plan = s.plan_id ? plans.find((p) => p.id === s.plan_id) : null;
+    const product = plan ? products.find((p) => p.id === plan.product_id) : null;
+    const vendorCode = product?.vendor_code ?? s.vendor_code;
+    const vendor = vendorCode ? vendors.find((v) => v.code === vendorCode) : null;
+    return {
+      vendorName: vendor?.name ?? vendorCode ?? "—",
+      productName: product?.name ?? plan?.name ?? null,
+    };
+  }
+
   return (
     <div className="max-w-5xl">
       <div className="flex items-center justify-between text-sm text-muted">
@@ -303,6 +385,7 @@ export function HotelDetail() {
             </div>
           </div>
           {canWrite &&
+            tab === "informations" &&
             (mode === "view" ? (
               <button
                 onClick={startEdit}
@@ -333,7 +416,7 @@ export function HotelDetail() {
       </div>
 
       <div className="mt-3">
-        {mode === "edit" ? (
+        {mode === "edit" && tab === "informations" ? (
           <select
             value={draft?.lifecycle_status}
             onChange={(e) =>
@@ -358,281 +441,452 @@ export function HotelDetail() {
         )}
       </div>
 
+      {/* Croquis du stack — lecture seule, genere depuis v_property_stack */}
+      <div className="mt-6 rounded-xl border border-line bg-white p-5">
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
+            Croquis du stack
+          </h2>
+          <span className="text-xs text-muted">
+            {subscriptions.length} ligne{subscriptions.length !== 1 ? "s" : ""}{" "}
+            d'abonnement · lecture seule
+          </span>
+        </div>
+        {property.stack_surveyed_at ? (
+          <p className="mt-1 text-xs text-muted">
+            Relevé du {new Date(property.stack_surveyed_at).toLocaleDateString("fr-FR")}
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-muted">
+            Stack jamais relevé — un rôle « aucun » ici signifie inconnu, pas confirmé vide.
+          </p>
+        )}
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+          {STACK_ROLE_ORDER.map((role) => {
+            // Un role peut porter plusieurs lignes actives en meme temps
+            // (ex : 3 add-ons HotelRunner simultanes) — v_property_stack
+            // renvoie une ligne par abonnement, pas une par role.
+            const rows = stackRows.filter((r) => r.role === role);
+            const filledRows = rows.filter((r) => r.role_state === "filled");
+            const roleState = rows[0]?.role_state;
+            return (
+              <div
+                key={role}
+                className={`rounded-lg border p-3 text-xs ${
+                  filledRows.length > 0
+                    ? "border-brand/40 bg-brand/5"
+                    : "border-dashed border-line"
+                }`}
+              >
+                <p className="font-semibold uppercase tracking-wide text-muted">
+                  {STACK_ROLE_LABEL[role]}
+                </p>
+                {filledRows.length > 0 ? (
+                  <div className="mt-1 space-y-1.5">
+                    {filledRows.map((row) => (
+                      <div key={row.subscription_id}>
+                        <p className="font-medium text-ink">{row.vendor}</p>
+                        <p
+                          className={`mt-0.5 inline-block rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase ${
+                            SUB_STATUS_COLOR[row.status ?? ""] ?? "bg-neutral-100 text-neutral-700"
+                          }`}
+                        >
+                          {SUB_STATUS_LABEL[row.status ?? ""] ?? row.status}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-muted">
+                    {roleState === "none" ? "Aucun (confirmé)" : "Aucun"}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="mt-4 flex gap-6 border-b border-line text-sm">
+        <button
+          onClick={() => setTab("informations")}
+          className={`-mb-px border-b-2 px-1 py-2 font-medium ${
+            tab === "informations"
+              ? "border-brand text-brand"
+              : "border-transparent text-muted hover:text-ink"
+          }`}
+        >
+          Informations
+        </button>
+        <button
+          onClick={() => setTab("abonnements")}
+          className={`-mb-px border-b-2 px-1 py-2 font-medium ${
+            tab === "abonnements"
+              ? "border-brand text-brand"
+              : "border-transparent text-muted hover:text-ink"
+          }`}
+        >
+          Abonnements {subscriptions.length}
+        </button>
+      </div>
+
       {saveError && (
         <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-danger">
           {saveError}
         </p>
       )}
 
-      <form
-        id="hotel-edit-form"
-        onSubmit={handleSave}
-        className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3"
-      >
-        <Panel title="Identité">
-          <InfoField label="Code HWS" hint="Σ attribué" value={property.code} />
-          <InfoField
-            label="Nom"
-            value={property.name}
-            editing={mode === "edit"}
-            input={
-              <input
-                required
-                value={draft?.name}
-                onChange={(e) => setField("name", e.target.value)}
-                className={inlineInputClass}
-              />
-            }
-          />
-          <InfoField
-            label="Entité juridique"
-            value={legalEntity?.legal_name ?? null}
-            missingText="Non renseignée"
-            editing={mode === "edit"}
-            input={
-              <select
-                value={draft?.legal_entity_id}
-                onChange={(e) => setField("legal_entity_id", e.target.value)}
-                className={inlineInputClass}
-              >
-                <option value="">—</option>
-                {legalEntities.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.legal_name}
-                  </option>
-                ))}
-              </select>
-            }
-          />
-          <InfoField
-            label="Groupe"
-            value={group?.name ?? null}
-            missingText="Aucun"
-            editing={mode === "edit"}
-            input={
-              <select
-                value={draft?.group_id}
-                onChange={(e) => setField("group_id", e.target.value)}
-                className={inlineInputClass}
-              >
-                <option value="">—</option>
-                {groups.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                  </option>
-                ))}
-              </select>
-            }
-          />
-          <InfoField
-            label="Logo"
-            value={property.logo_url ? "Renseigné" : null}
-            missingText="Absent"
-            editing={mode === "edit"}
-            input={
-              <input
-                type="url"
-                placeholder="URL du logo"
-                value={draft?.logo_url}
-                onChange={(e) => setField("logo_url", e.target.value)}
-                className={inlineInputClass}
-              />
-            }
-          />
-        </Panel>
-
-        <Panel title="Localisation & caractéristiques">
-          <InfoField
-            label="Ville, pays"
-            value={[property.city, property.country].filter(Boolean).join(", ") || null}
-            editing={mode === "edit"}
-            input={
-              <div className="mt-1 flex gap-2">
+      {tab === "informations" && (
+        <form
+          id="hotel-edit-form"
+          onSubmit={handleSave}
+          className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3"
+        >
+          <Panel title="Identité">
+            <InfoField label="Code HWS" hint="Σ attribué" value={property.code} />
+            <InfoField
+              label="Nom"
+              value={property.name}
+              editing={mode === "edit"}
+              input={
                 <input
-                  value={draft?.city}
-                  onChange={(e) => setField("city", e.target.value)}
-                  placeholder="Ville"
+                  required
+                  value={draft?.name}
+                  onChange={(e) => setField("name", e.target.value)}
                   className={inlineInputClass}
                 />
-                <input
-                  value={draft?.country}
-                  onChange={(e) => setField("country", e.target.value.toUpperCase())}
-                  placeholder="Pays"
-                  maxLength={2}
-                  className={`${inlineInputClass} w-20`}
-                />
-              </div>
-            }
-          />
-          <InfoField
-            label="Adresse"
-            value={property.address}
-            missingText="Non renseignée"
-            editing={mode === "edit"}
-            input={
-              <input
-                value={draft?.address}
-                onChange={(e) => setField("address", e.target.value)}
-                className={inlineInputClass}
-              />
-            }
-          />
-          <InfoField
-            label="Type"
-            value={property.property_type}
-            editing={mode === "edit"}
-            input={
-              <input
-                value={draft?.property_type}
-                onChange={(e) => setField("property_type", e.target.value)}
-                placeholder="Riad, Hôtel…"
-                className={inlineInputClass}
-              />
-            }
-          />
-          <InfoField
-            label="Classement"
-            value={property.star_rating}
-            editing={mode === "edit"}
-            input={
-              <input
-                value={draft?.star_rating}
-                onChange={(e) => setField("star_rating", e.target.value)}
-                className={inlineInputClass}
-              />
-            }
-          />
-          <InfoField
-            label="Chambres"
-            value={property.rooms_total?.toString() ?? null}
-            editing={mode === "edit"}
-            input={
-              <input
-                type="number"
-                min={0}
-                value={draft?.rooms_total}
-                onChange={(e) => setField("rooms_total", e.target.value)}
-                className={inlineInputClass}
-              />
-            }
-          />
-          <InfoField
-            label="Site web"
-            value={property.website}
-            missingText="Aucun site constaté"
-            link={property.website ?? undefined}
-            editing={mode === "edit"}
-            input={
-              <input
-                type="url"
-                value={draft?.website}
-                onChange={(e) => setField("website", e.target.value)}
-                placeholder="https://…"
-                className={inlineInputClass}
-              />
-            }
-          />
-          <InfoField
-            label="WhatsApp support"
-            value={property.support_whatsapp}
-            editing={mode === "edit"}
-            input={
-              <input
-                value={draft?.support_whatsapp}
-                onChange={(e) => setField("support_whatsapp", e.target.value)}
-                className={inlineInputClass}
-              />
-            }
-          />
-        </Panel>
-
-        <div className="rounded-xl border-2 border-brand/30 bg-white p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-brand">
-            Ce qui manque pour vendre
-          </h2>
-          {missing.length === 0 ? (
-            <p className="mt-3 text-sm text-muted">Rien à signaler.</p>
-          ) : (
-            <ol className="mt-3 space-y-3">
-              {missing.map((m, i) => (
-                <li key={m.label} className="text-sm">
-                  <span className="font-semibold text-ink">
-                    {i + 1}. {m.label}
-                  </span>
-                  <p className="text-muted">{m.detail}</p>
-                </li>
-              ))}
-            </ol>
-          )}
-
-          {canWrite && !signatory && (
-            <div className="mt-4 border-t border-line pt-4">
-              {addingContact ? (
-                <form onSubmit={handleAddSignatory} className="space-y-2">
-                  <input
-                    required
-                    placeholder="Nom complet"
-                    value={contactDraft.full_name}
-                    onChange={(e) =>
-                      setContactDraft((c) => ({ ...c, full_name: e.target.value }))
-                    }
-                    className={inlineInputClass}
-                  />
-                  <input
-                    placeholder="Fonction"
-                    value={contactDraft.job_title}
-                    onChange={(e) =>
-                      setContactDraft((c) => ({ ...c, job_title: e.target.value }))
-                    }
-                    className={inlineInputClass}
-                  />
-                  <input
-                    type="email"
-                    placeholder="Email"
-                    value={contactDraft.email}
-                    onChange={(e) =>
-                      setContactDraft((c) => ({ ...c, email: e.target.value }))
-                    }
-                    className={inlineInputClass}
-                  />
-                  <input
-                    placeholder="Téléphone"
-                    value={contactDraft.phone}
-                    onChange={(e) =>
-                      setContactDraft((c) => ({ ...c, phone: e.target.value }))
-                    }
-                    className={inlineInputClass}
-                  />
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      type="submit"
-                      disabled={savingContact}
-                      className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
-                    >
-                      {savingContact ? "…" : "Enregistrer"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAddingContact(false)}
-                      className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-paper"
-                    >
-                      Annuler
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setAddingContact(true)}
-                  className="w-full rounded-md border border-line px-3 py-2 text-sm text-ink hover:bg-paper"
+              }
+            />
+            <InfoField
+              label="Entité juridique"
+              value={legalEntity?.legal_name ?? null}
+              missingText="Non renseignée"
+              editing={mode === "edit"}
+              input={
+                <select
+                  value={draft?.legal_entity_id}
+                  onChange={(e) => setField("legal_entity_id", e.target.value)}
+                  className={inlineInputClass}
                 >
-                  Ajouter un contact
-                </button>
-              )}
-            </div>
+                  <option value="">—</option>
+                  {legalEntities.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.legal_name}
+                    </option>
+                  ))}
+                </select>
+              }
+            />
+            <InfoField
+              label="Groupe"
+              value={group?.name ?? null}
+              missingText="Aucun"
+              editing={mode === "edit"}
+              input={
+                <select
+                  value={draft?.group_id}
+                  onChange={(e) => setField("group_id", e.target.value)}
+                  className={inlineInputClass}
+                >
+                  <option value="">—</option>
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
+                  ))}
+                </select>
+              }
+            />
+            <InfoField
+              label="Logo"
+              value={property.logo_url ? "Renseigné" : null}
+              missingText="Absent"
+              editing={mode === "edit"}
+              input={
+                <input
+                  type="url"
+                  placeholder="URL du logo"
+                  value={draft?.logo_url}
+                  onChange={(e) => setField("logo_url", e.target.value)}
+                  className={inlineInputClass}
+                />
+              }
+            />
+          </Panel>
+
+          <Panel title="Localisation & caractéristiques">
+            <InfoField
+              label="Ville, pays"
+              value={[property.city, property.country].filter(Boolean).join(", ") || null}
+              editing={mode === "edit"}
+              input={
+                <div className="mt-1 flex gap-2">
+                  <input
+                    value={draft?.city}
+                    onChange={(e) => setField("city", e.target.value)}
+                    placeholder="Ville"
+                    className={inlineInputClass}
+                  />
+                  <input
+                    value={draft?.country}
+                    onChange={(e) => setField("country", e.target.value.toUpperCase())}
+                    placeholder="Pays"
+                    maxLength={2}
+                    className={`${inlineInputClass} w-20`}
+                  />
+                </div>
+              }
+            />
+            <InfoField
+              label="Adresse"
+              value={property.address}
+              missingText="Non renseignée"
+              editing={mode === "edit"}
+              input={
+                <input
+                  value={draft?.address}
+                  onChange={(e) => setField("address", e.target.value)}
+                  className={inlineInputClass}
+                />
+              }
+            />
+            <InfoField
+              label="Type"
+              value={property.property_type}
+              editing={mode === "edit"}
+              input={
+                <input
+                  value={draft?.property_type}
+                  onChange={(e) => setField("property_type", e.target.value)}
+                  placeholder="Riad, Hôtel…"
+                  className={inlineInputClass}
+                />
+              }
+            />
+            <InfoField
+              label="Classement"
+              value={property.star_rating}
+              editing={mode === "edit"}
+              input={
+                <input
+                  value={draft?.star_rating}
+                  onChange={(e) => setField("star_rating", e.target.value)}
+                  className={inlineInputClass}
+                />
+              }
+            />
+            <InfoField
+              label="Chambres"
+              value={property.rooms_total?.toString() ?? null}
+              editing={mode === "edit"}
+              input={
+                <input
+                  type="number"
+                  min={0}
+                  value={draft?.rooms_total}
+                  onChange={(e) => setField("rooms_total", e.target.value)}
+                  className={inlineInputClass}
+                />
+              }
+            />
+            <InfoField
+              label="Site web"
+              value={property.website}
+              missingText="Aucun site constaté"
+              link={property.website ?? undefined}
+              editing={mode === "edit"}
+              input={
+                <input
+                  type="url"
+                  value={draft?.website}
+                  onChange={(e) => setField("website", e.target.value)}
+                  placeholder="https://…"
+                  className={inlineInputClass}
+                />
+              }
+            />
+            <InfoField
+              label="WhatsApp support"
+              value={property.support_whatsapp}
+              editing={mode === "edit"}
+              input={
+                <input
+                  value={draft?.support_whatsapp}
+                  onChange={(e) => setField("support_whatsapp", e.target.value)}
+                  className={inlineInputClass}
+                />
+              }
+            />
+          </Panel>
+
+          <div className="rounded-xl border-2 border-brand/30 bg-white p-5">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-brand">
+              Ce qui manque pour vendre
+            </h2>
+            {missing.length === 0 ? (
+              <p className="mt-3 text-sm text-muted">Rien à signaler.</p>
+            ) : (
+              <ol className="mt-3 space-y-3">
+                {missing.map((m, i) => (
+                  <li key={m.label} className="text-sm">
+                    <span className="font-semibold text-ink">
+                      {i + 1}. {m.label}
+                    </span>
+                    <p className="text-muted">{m.detail}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
+
+            {canWrite && !signatory && (
+              <div className="mt-4 border-t border-line pt-4">
+                {addingContact ? (
+                  <form onSubmit={handleAddSignatory} className="space-y-2">
+                    <input
+                      required
+                      placeholder="Nom complet"
+                      value={contactDraft.full_name}
+                      onChange={(e) =>
+                        setContactDraft((c) => ({ ...c, full_name: e.target.value }))
+                      }
+                      className={inlineInputClass}
+                    />
+                    <input
+                      placeholder="Fonction"
+                      value={contactDraft.job_title}
+                      onChange={(e) =>
+                        setContactDraft((c) => ({ ...c, job_title: e.target.value }))
+                      }
+                      className={inlineInputClass}
+                    />
+                    <input
+                      type="email"
+                      placeholder="Email"
+                      value={contactDraft.email}
+                      onChange={(e) =>
+                        setContactDraft((c) => ({ ...c, email: e.target.value }))
+                      }
+                      className={inlineInputClass}
+                    />
+                    <input
+                      placeholder="Téléphone"
+                      value={contactDraft.phone}
+                      onChange={(e) =>
+                        setContactDraft((c) => ({ ...c, phone: e.target.value }))
+                      }
+                      className={inlineInputClass}
+                    />
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        type="submit"
+                        disabled={savingContact}
+                        className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-hover disabled:opacity-50"
+                      >
+                        {savingContact ? "…" : "Enregistrer"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAddingContact(false)}
+                        className="rounded-md border border-line px-3 py-1.5 text-xs text-muted hover:bg-paper"
+                      >
+                        Annuler
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setAddingContact(true)}
+                    className="w-full rounded-md border border-line px-3 py-2 text-sm text-ink hover:bg-paper"
+                  >
+                    Ajouter un contact
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </form>
+      )}
+
+      {tab === "abonnements" && (
+        <div className="mt-6 overflow-x-auto rounded-xl border border-line bg-white">
+          {subscriptions.length === 0 ? (
+            <p className="p-6 text-sm text-muted">Aucun abonnement enregistré.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="border-b border-line bg-paper text-left text-xs uppercase tracking-wide text-muted">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Rôle</th>
+                  <th className="px-4 py-3 font-medium">Fournisseur · produit</th>
+                  <th className="px-4 py-3 font-medium">Statut</th>
+                  <th className="px-4 py-3 font-medium">Activation</th>
+                  <th className="px-4 py-3 font-medium">Renouvellement</th>
+                  <th className="px-4 py-3 font-medium">Prix de vente</th>
+                  <th className="px-4 py-3 font-medium">Cohorte</th>
+                  <th className="px-4 py-3 font-medium">Financement</th>
+                  <th className="px-4 py-3 font-medium">Marge</th>
+                </tr>
+              </thead>
+              <tbody>
+                {subscriptions.map((s) => {
+                  const { vendorName, productName } = describeSubscription(s);
+                  const margin =
+                    s.sale_price != null && s.vendor_cost != null
+                      ? s.sale_price - s.vendor_cost
+                      : null;
+                  return (
+                    <tr
+                      key={s.id}
+                      className="border-b border-line last:border-0 hover:bg-paper"
+                    >
+                      <td className="px-4 py-3">
+                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs font-medium uppercase text-neutral-700">
+                          {STACK_ROLE_LABEL[s.role] ?? s.role}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-ink">
+                        {vendorName}
+                        {productName && (
+                          <span className="text-muted"> · {productName}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                            SUB_STATUS_COLOR[s.status] ?? "bg-neutral-100 text-neutral-700"
+                          }`}
+                        >
+                          {SUB_STATUS_LABEL[s.status] ?? s.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-muted">
+                        {s.activation_date
+                          ? new Date(s.activation_date).toLocaleDateString("fr-FR")
+                          : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-muted">
+                        {s.renewal_date
+                          ? new Date(s.renewal_date).toLocaleDateString("fr-FR")
+                          : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-muted">
+                        {s.sale_price != null
+                          ? `${s.sale_price} ${s.sale_currency ?? ""}`
+                          : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-muted">{s.pricing_cohort ?? "—"}</td>
+                      <td className="px-4 py-3 text-muted">{s.funded_by ?? "—"}</td>
+                      <td className="px-4 py-3 text-muted">
+                        {margin != null ? `${margin} ${s.sale_currency ?? ""}` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
-      </form>
+      )}
     </div>
   );
 }
