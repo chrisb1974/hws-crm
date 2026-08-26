@@ -43,16 +43,6 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          <Route
-            path="/hotels/:id/edit"
-            element={
-              <ProtectedRoute>
-                <Layout>
-                  <HotelForm />
-                </Layout>
-              </ProtectedRoute>
-            }
-          />
         </Routes>
       </AuthProvider>
     </BrowserRouter>

@@ -1,10 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import type { Database } from "../lib/database.types";
 import { useAuth } from "../contexts/AuthContext";
 
-type Property = Database["public"]["Tables"]["property"]["Row"];
 type LifecycleStatus = Database["public"]["Enums"]["lifecycle_status"];
 type BillingEntity = Database["public"]["Tables"]["billing_entity"]["Row"];
 
@@ -53,37 +52,13 @@ const EMPTY: FormState = {
   facilities: "",
 };
 
-function toFormState(p: Property): FormState {
-  return {
-    name: p.name,
-    property_type: p.property_type ?? "",
-    star_rating: p.star_rating ?? "",
-    country: p.country ?? "",
-    city: p.city ?? "",
-    address: p.address ?? "",
-    latitude: p.latitude?.toString() ?? "",
-    longitude: p.longitude?.toString() ?? "",
-    rooms_total: p.rooms_total?.toString() ?? "",
-    website: p.website ?? "",
-    support_whatsapp: p.support_whatsapp ?? "",
-    lifecycle_status: p.lifecycle_status,
-    billing_entity_code: p.billing_entity_code ?? "",
-    description: p.description ?? "",
-    facilities: p.facilities ?? "",
-  };
-}
-
 export function HotelForm() {
-  const { id } = useParams();
-  const isEdit = Boolean(id);
   const navigate = useNavigate();
   const { appUser } = useAuth();
   const canWrite = appUser?.role === "admin" || appUser?.role === "sales";
 
   const [form, setForm] = useState<FormState>(EMPTY);
-  const [code, setCode] = useState<string | null>(null);
   const [billingEntities, setBillingEntities] = useState<BillingEntity[]>([]);
-  const [loading, setLoading] = useState(isEdit);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -94,28 +69,6 @@ export function HotelForm() {
       .order("code")
       .then(({ data }) => setBillingEntities(data ?? []));
   }, []);
-
-  useEffect(() => {
-    if (!isEdit || !id) return;
-    let cancelled = false;
-    supabase
-      .from("property")
-      .select("*")
-      .eq("id", id)
-      .single()
-      .then(({ data, error }) => {
-        if (cancelled) return;
-        if (error) setError(error.message);
-        else if (data) {
-          setForm(toFormState(data));
-          setCode(data.code);
-        }
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id, isEdit]);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -145,17 +98,6 @@ export function HotelForm() {
       facilities: form.facilities.trim() || null,
     };
 
-    if (isEdit && id) {
-      const { error } = await supabase
-        .from("property")
-        .update(payload)
-        .eq("id", id);
-      setSaving(false);
-      if (error) return setError(error.message);
-      navigate(`/hotels/${id}`);
-      return;
-    }
-
     const { data: newCode, error: codeError } = await supabase.rpc(
       "next_property_code",
     );
@@ -175,10 +117,6 @@ export function HotelForm() {
     if (created) navigate(`/hotels/${created.id}`);
   }
 
-  if (loading) {
-    return <p className="text-muted">Chargement…</p>;
-  }
-
   if (!canWrite) {
     return (
       <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-danger">
@@ -190,14 +128,11 @@ export function HotelForm() {
   return (
     <div className="max-w-2xl">
       <div className="mb-6">
-        <Link
-          to={isEdit && id ? `/hotels/${id}` : "/"}
-          className="text-sm text-muted hover:underline"
-        >
+        <Link to="/" className="text-sm text-muted hover:underline">
           ← Retour
         </Link>
         <h1 className="mt-2 text-2xl font-semibold text-ink">
-          {isEdit ? `Modifier ${code ?? ""}` : "Nouvel établissement"}
+          Nouvel établissement
         </h1>
       </div>
 
@@ -380,10 +315,10 @@ export function HotelForm() {
             disabled={saving}
             className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-hover disabled:opacity-50"
           >
-            {saving ? "Enregistrement…" : isEdit ? "Enregistrer" : "Créer l'établissement"}
+            {saving ? "Enregistrement…" : "Créer l'établissement"}
           </button>
           <Link
-            to={isEdit && id ? `/hotels/${id}` : "/"}
+            to="/"
             className="rounded-md border border-line px-4 py-2 text-sm text-muted hover:bg-paper"
           >
             Annuler
