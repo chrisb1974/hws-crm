@@ -138,6 +138,7 @@ ALTER TYPE "public"."membership_status" OWNER TO "postgres";
 
 
 CREATE TYPE "public"."stack_role" AS ENUM (
+    'CRS',
     'PMS',
     'CM',
     'BE',
@@ -1047,7 +1048,8 @@ CREATE TABLE IF NOT EXISTS "public"."property" (
     "merged_into" "uuid",
     "custom_fields" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"(),
-    "updated_at" timestamp with time zone DEFAULT "now"()
+    "updated_at" timestamp with time zone DEFAULT "now"(),
+    "website_status" "text"
 );
 
 
@@ -1131,6 +1133,142 @@ CREATE TABLE IF NOT EXISTS "public"."territory" (
 ALTER TABLE "public"."territory" OWNER TO "postgres";
 
 
+CREATE OR REPLACE VIEW "public"."v_gosiyaha_ready" AS
+ SELECT "a"."id" AS "action_id",
+    "d"."id" AS "dossier_id",
+    "a"."action_type",
+    "count"(*) FILTER (WHERE (NOT "pr"."satisfied")) AS "missing_count",
+    "array_agg"("pr"."label" ORDER BY "pr"."code") FILTER (WHERE (NOT "pr"."satisfied")) AS "missing",
+    ("count"(*) FILTER (WHERE (NOT "pr"."satisfied")) = 0) AS "can_generate"
+   FROM (("public"."gosiyaha_action" "a"
+     JOIN "public"."gosiyaha_dossier" "d" ON (("d"."id" = "a"."dossier_id")))
+     LEFT JOIN "public"."gosiyaha_prerequisite" "pr" ON (("pr"."action_id" = "a"."id")))
+  GROUP BY "a"."id", "d"."id", "a"."action_type";
+
+
+ALTER VIEW "public"."v_gosiyaha_ready" OWNER TO "postgres";
+
+
+CREATE OR REPLACE VIEW "public"."v_alerts" AS
+ SELECT ('renewal_'::"text" || ("s"."id")::"text") AS "alert_key",
+    'renewal'::"text" AS "kind",
+        CASE
+            WHEN (("s"."renewal_date" - CURRENT_DATE) <= 7) THEN 'critical'::"text"
+            WHEN (("s"."renewal_date" - CURRENT_DATE) <= 30) THEN 'high'::"text"
+            ELSE 'medium'::"text"
+        END AS "severity",
+    "s"."renewal_date" AS "due_date",
+    ("s"."renewal_date" - CURRENT_DATE) AS "days_left",
+    "p"."id" AS "property_id",
+    "p"."code" AS "property_code",
+    "p"."name" AS "property_name",
+    "s"."vendor_code",
+    ("s"."role")::"text" AS "role",
+    COALESCE("u"."full_name", 'Non assigné'::"text") AS "owner_name",
+    "p"."sales_owner" AS "owner_id",
+    'Confirmer le renouvellement'::"text" AS "action_label"
+   FROM (("public"."subscription" "s"
+     JOIN "public"."property" "p" ON ((("p"."id" = "s"."property_id") AND ("p"."merged_into" IS NULL))))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "p"."sales_owner")))
+  WHERE (("s"."status" = 'active'::"public"."sub_status") AND (("s"."renewal_date" >= CURRENT_DATE) AND ("s"."renewal_date" <= (CURRENT_DATE + 60))))
+UNION ALL
+ SELECT ('notice_'::"text" || ("s"."id")::"text") AS "alert_key",
+    'notice'::"text" AS "kind",
+        CASE
+            WHEN (("s"."notice_deadline" - CURRENT_DATE) <= 7) THEN 'critical'::"text"
+            ELSE 'high'::"text"
+        END AS "severity",
+    "s"."notice_deadline" AS "due_date",
+    ("s"."notice_deadline" - CURRENT_DATE) AS "days_left",
+    "p"."id" AS "property_id",
+    "p"."code" AS "property_code",
+    "p"."name" AS "property_name",
+    "s"."vendor_code",
+    ("s"."role")::"text" AS "role",
+    COALESCE("u"."full_name", 'Non assigné'::"text") AS "owner_name",
+    "p"."sales_owner" AS "owner_id",
+    'Décider avant la date limite de préavis'::"text" AS "action_label"
+   FROM (("public"."subscription" "s"
+     JOIN "public"."property" "p" ON ((("p"."id" = "s"."property_id") AND ("p"."merged_into" IS NULL))))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "p"."sales_owner")))
+  WHERE (("s"."status" = 'active'::"public"."sub_status") AND ("s"."notice_days" IS NOT NULL) AND (("s"."notice_deadline" >= CURRENT_DATE) AND ("s"."notice_deadline" <= (CURRENT_DATE + 30))))
+UNION ALL
+ SELECT ('subsidy_'::"text" || ("s"."id")::"text") AS "alert_key",
+    'subsidy_end'::"text" AS "kind",
+    'medium'::"text" AS "severity",
+    "s"."subsidy_end_date" AS "due_date",
+    ("s"."subsidy_end_date" - CURRENT_DATE) AS "days_left",
+    "p"."id" AS "property_id",
+    "p"."code" AS "property_code",
+    "p"."name" AS "property_name",
+    "s"."vendor_code",
+    ("s"."role")::"text" AS "role",
+    COALESCE("u"."full_name", 'Non assigné'::"text") AS "owner_name",
+    "p"."sales_owner" AS "owner_id",
+    'Préparer la bascule en tarif plein'::"text" AS "action_label"
+   FROM (("public"."subscription" "s"
+     JOIN "public"."property" "p" ON ((("p"."id" = "s"."property_id") AND ("p"."merged_into" IS NULL))))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "p"."sales_owner")))
+  WHERE (("s"."status" = 'active'::"public"."sub_status") AND (("s"."subsidy_end_date" >= CURRENT_DATE) AND ("s"."subsidy_end_date" <= (CURRENT_DATE + 90))))
+UNION ALL
+ SELECT ('gs_stale_'::"text" || ("d"."id")::"text") AS "alert_key",
+    'gosiyaha_stale'::"text" AS "kind",
+    'high'::"text" AS "severity",
+    (("d"."updated_at" + '14 days'::interval))::"date" AS "due_date",
+    ((("d"."updated_at" + '14 days'::interval))::"date" - CURRENT_DATE) AS "days_left",
+    "p"."id" AS "property_id",
+    "p"."code" AS "property_code",
+    "p"."name" AS "property_name",
+    NULL::"text" AS "vendor_code",
+    NULL::"text" AS "role",
+    COALESCE("u"."full_name", 'Non assigné'::"text") AS "owner_name",
+    "d"."owner_user" AS "owner_id",
+    'Relancer le dossier'::"text" AS "action_label"
+   FROM (("public"."gosiyaha_dossier" "d"
+     JOIN "public"."property" "p" ON ((("p"."id" = "d"."property_id") AND ("p"."merged_into" IS NULL))))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "d"."owner_user")))
+  WHERE ("d"."updated_at" < ("now"() - '14 days'::interval))
+UNION ALL
+ SELECT DISTINCT ON ("p"."id") ('logo_'::"text" || ("p"."id")::"text") AS "alert_key",
+    'missing_logo'::"text" AS "kind",
+    'medium'::"text" AS "severity",
+    NULL::"date" AS "due_date",
+    NULL::integer AS "days_left",
+    "p"."id" AS "property_id",
+    "p"."code" AS "property_code",
+    "p"."name" AS "property_name",
+    NULL::"text" AS "vendor_code",
+    NULL::"text" AS "role",
+    COALESCE("u"."full_name", 'Non assigné'::"text") AS "owner_name",
+    "p"."sales_owner" AS "owner_id",
+    'Téléverser le logo pour débloquer le livrable'::"text" AS "action_label"
+   FROM ((("public"."property" "p"
+     JOIN "public"."gosiyaha_dossier" "d" ON (("d"."property_id" = "p"."id")))
+     JOIN "public"."v_gosiyaha_ready" "r" ON ((("r"."dossier_id" = "d"."id") AND "r"."can_generate")))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "p"."sales_owner")))
+  WHERE (("p"."merged_into" IS NULL) AND ("p"."logo_url" IS NULL))
+UNION ALL
+ SELECT ('lead_followup_'::"text" || ("l"."id")::"text") AS "alert_key",
+    'lead_followup'::"text" AS "kind",
+    'medium'::"text" AS "severity",
+    "l"."followup_at" AS "due_date",
+    ("l"."followup_at" - CURRENT_DATE) AS "days_left",
+    NULL::"uuid" AS "property_id",
+    "l"."code" AS "property_code",
+    "l"."name" AS "property_name",
+    NULL::"text" AS "vendor_code",
+    NULL::"text" AS "role",
+    COALESCE("u"."full_name", 'Non assigné'::"text") AS "owner_name",
+    "l"."owner" AS "owner_id",
+    'Reprendre contact'::"text" AS "action_label"
+   FROM ("public"."lead" "l"
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "l"."owner")))
+  WHERE (("l"."status" = 'lost'::"public"."lead_status") AND ("l"."followup_done" = false) AND ("l"."followup_at" IS NOT NULL) AND ("l"."followup_at" <= (CURRENT_DATE + 14)));
+
+
+ALTER VIEW "public"."v_alerts" OWNER TO "postgres";
+
+
 CREATE OR REPLACE VIEW "public"."v_gosiyaha_livrables" WITH ("security_invoker"='true') AS
  SELECT "p"."code" AS "Code HWS",
     ("d"."data" ->> 'Go Siyaha Name'::"text") AS "Go Siyaha Name",
@@ -1152,22 +1290,6 @@ COMMENT ON VIEW "public"."v_gosiyaha_livrables" IS 'Vue de compatibilite : noms 
 
 
 
-CREATE OR REPLACE VIEW "public"."v_gosiyaha_ready" AS
- SELECT "a"."id" AS "action_id",
-    "d"."id" AS "dossier_id",
-    "a"."action_type",
-    "count"(*) FILTER (WHERE (NOT "pr"."satisfied")) AS "missing_count",
-    "array_agg"("pr"."label" ORDER BY "pr"."code") FILTER (WHERE (NOT "pr"."satisfied")) AS "missing",
-    ("count"(*) FILTER (WHERE (NOT "pr"."satisfied")) = 0) AS "can_generate"
-   FROM (("public"."gosiyaha_action" "a"
-     JOIN "public"."gosiyaha_dossier" "d" ON (("d"."id" = "a"."dossier_id")))
-     LEFT JOIN "public"."gosiyaha_prerequisite" "pr" ON (("pr"."action_id" = "a"."id")))
-  GROUP BY "a"."id", "d"."id", "a"."action_type";
-
-
-ALTER VIEW "public"."v_gosiyaha_ready" OWNER TO "postgres";
-
-
 CREATE OR REPLACE VIEW "public"."v_gosiyaha_record" AS
  SELECT "d"."id",
     "p"."code" AS "property_code",
@@ -1182,6 +1304,156 @@ ALTER VIEW "public"."v_gosiyaha_record" OWNER TO "postgres";
 
 COMMENT ON VIEW "public"."v_gosiyaha_record" IS 'Equivalent de GET /crm/v8/Go_Siyaha/{id} : un objet JSON clef = nom d''API Zoho.';
 
+
+
+CREATE OR REPLACE VIEW "public"."v_lead_pipeline" AS
+ SELECT "l"."id",
+    "l"."code",
+    "l"."name",
+    "l"."city",
+    "l"."country",
+    "l"."territory_code",
+    "l"."property_type",
+    "l"."star_rating",
+    "l"."rooms_estimate",
+    "l"."website",
+    "l"."source",
+    "l"."interest_products",
+    "l"."current_stack_note",
+    "l"."stage_code",
+    "ls"."label_fr" AS "stage_fr",
+    "ls"."label_en" AS "stage_en",
+    "ls"."position" AS "stage_position",
+    "ls"."probability",
+    ("l"."status")::"text" AS "status",
+    "u"."full_name" AS "owner_name",
+    "l"."owner" AS "owner_id",
+    "l"."next_action_date",
+    "l"."next_action_note",
+        CASE
+            WHEN ("l"."next_action_date" < CURRENT_DATE) THEN true
+            ELSE false
+        END AS "is_overdue",
+    "l"."expected_value",
+    "l"."expected_currency",
+    "l"."property_id",
+    "pr"."name" AS "existing_property_name",
+    ("l"."property_id" IS NOT NULL) AS "is_upsell",
+    "l"."converted_property_id",
+    "l"."won_at",
+    "l"."lost_at",
+    "l"."loss_reason_code",
+    "lr"."label_fr" AS "loss_reason_fr",
+    "l"."loss_note",
+    "l"."followup_at",
+    "l"."followup_done",
+    (CURRENT_DATE - ("l"."created_at")::"date") AS "age_days",
+    "l"."created_at",
+    "l"."updated_at"
+   FROM (((("public"."lead" "l"
+     LEFT JOIN "public"."lead_stage" "ls" ON (("ls"."code" = "l"."stage_code")))
+     LEFT JOIN "public"."lead_loss_reason" "lr" ON (("lr"."code" = "l"."loss_reason_code")))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "l"."owner")))
+     LEFT JOIN "public"."property" "pr" ON (("pr"."id" = "l"."property_id")));
+
+
+ALTER VIEW "public"."v_lead_pipeline" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."vendor" (
+    "code" "text" NOT NULL,
+    "name" "text" NOT NULL,
+    "is_partner" boolean DEFAULT false,
+    "extranet_url_template" "text"
+);
+
+
+ALTER TABLE "public"."vendor" OWNER TO "postgres";
+
+
+CREATE OR REPLACE VIEW "public"."v_stack_summary" AS
+ WITH "roles" AS (
+         SELECT "unnest"("enum_range"(NULL::"public"."stack_role")) AS "role"
+        ), "subs" AS (
+         SELECT "s"."property_id",
+            "s"."role",
+            ("s"."status")::"text" AS "status",
+            "s"."vendor_code",
+            "v"."name" AS "vendor_name",
+            COALESCE("s"."is_hws_offer_override", ("pr"."stance" = 'offer'::"public"."hws_stance"), "v"."is_partner") AS "is_hws",
+            "pr"."name" AS "product_name",
+            "s"."renewal_date",
+            "s"."activation_date",
+            "row_number"() OVER (PARTITION BY "s"."property_id", "s"."role" ORDER BY COALESCE("s"."is_hws_offer_override", ("pr"."stance" = 'offer'::"public"."hws_stance"), "v"."is_partner") DESC, "s"."activation_date" DESC NULLS LAST) AS "rn"
+           FROM ((("public"."subscription" "s"
+             JOIN "public"."vendor" "v" ON (("v"."code" = "s"."vendor_code")))
+             LEFT JOIN "public"."plan" "pl" ON (("pl"."id" = "s"."plan_id")))
+             LEFT JOIN "public"."product" "pr" ON (("pr"."id" = "pl"."product_id")))
+          WHERE ("s"."status" = 'active'::"public"."sub_status")
+        )
+ SELECT "p"."id" AS "property_id",
+    "jsonb_agg"("jsonb_build_object"('role', "r"."role", 'filled', ("su"."property_id" IS NOT NULL), 'vendor_code', "su"."vendor_code", 'vendor', "su"."vendor_name", 'product', "su"."product_name", 'is_hws', COALESCE("su"."is_hws", false), 'status', "su"."status", 'renewal_date', "su"."renewal_date") ORDER BY ("array_position"(ARRAY['CRS'::"text", 'PMS'::"text", 'CM'::"text", 'BE'::"text", 'SITE'::"text", 'PAYMENT'::"text", 'ADDON'::"text", 'SERVICE'::"text"], ("r"."role")::"text"))) AS "stack",
+    "count"(*) FILTER (WHERE ("su"."property_id" IS NOT NULL)) AS "roles_covered",
+    ( SELECT "count"(*) AS "count"
+           FROM "roles") AS "roles_total",
+    "count"(*) FILTER (WHERE "su"."is_hws") AS "roles_hws",
+    "count"(*) FILTER (WHERE (("su"."property_id" IS NOT NULL) AND (NOT "su"."is_hws"))) AS "roles_rival"
+   FROM (("public"."property" "p"
+     CROSS JOIN "roles" "r")
+     LEFT JOIN "subs" "su" ON ((("su"."property_id" = "p"."id") AND ("su"."role" = "r"."role") AND ("su"."rn" = 1))))
+  GROUP BY "p"."id";
+
+
+ALTER VIEW "public"."v_stack_summary" OWNER TO "postgres";
+
+
+CREATE OR REPLACE VIEW "public"."v_project_property" AS
+ SELECT "pj"."code" AS "project_code",
+    "pj"."name" AS "project_name",
+    "pj"."type" AS "project_type",
+    "p"."id" AS "property_id",
+    "p"."code",
+    "p"."name",
+    "p"."city",
+    "p"."country",
+    "p"."property_type",
+    "p"."rooms_total",
+    ("p"."lifecycle_status")::"text" AS "lifecycle_status",
+    ("m"."status")::"text" AS "membership_status",
+    "m"."since",
+    ("m"."attributes" ->> 'quartier'::"text") AS "quartier",
+    ("m"."attributes" ->> 'cm_declare'::"text") AS "cm_declare",
+    ("m"."attributes" ->> 'sb_statut'::"text") AS "sb_statut",
+    COALESCE((("m"."attributes" ->> 'gs_action'::"text"))::boolean, false) AS "gs_action_declaree",
+    COALESCE((("m"."attributes" ->> 'tgs03'::"text"))::boolean, false) AS "tgs03",
+    COALESCE((("m"."attributes" ->> 'tgs04'::"text"))::boolean, false) AS "tgs04",
+    ("m"."attributes" ->> 'proprietaire'::"text") AS "proprietaire",
+    ("m"."attributes" ->> 'proprietaire_email'::"text") AS "proprietaire_email",
+    ("m"."attributes" ->> 'proprietaire_tel'::"text") AS "proprietaire_tel",
+    ("m"."attributes" ->> 'proprietaire_role'::"text") AS "proprietaire_role",
+    "st"."roles_covered",
+    "st"."roles_hws",
+    "st"."roles_rival",
+    "st"."stack",
+    ( SELECT "count"(*) AS "count"
+           FROM "public"."gosiyaha_dossier" "d"
+          WHERE ("d"."property_id" = "p"."id")) AS "dossiers_gosiyaha",
+        CASE
+            WHEN ("st"."roles_hws" > 0) THEN 'client_hws'::"text"
+            WHEN ("st"."roles_rival" > 0) THEN 'concurrent'::"text"
+            WHEN "v"."is_partner" THEN 'client_hws'::"text"
+            WHEN (("m"."attributes" ->> 'cm_declare'::"text") IS NULL) THEN 'inconnu'::"text"
+            WHEN (("m"."attributes" ->> 'cm_declare'::"text") ~~* ANY (ARRAY['%non confirmé%'::"text", '%aucun cm%'::"text", 'CM non confirmé'::"text"])) THEN 'sans_cm'::"text"
+            ELSE 'concurrent'::"text"
+        END AS "segment"
+   FROM (((("public"."project_membership" "m"
+     JOIN "public"."project" "pj" ON (("pj"."id" = "m"."project_id")))
+     JOIN "public"."property" "p" ON ((("p"."id" = "m"."property_id") AND ("p"."merged_into" IS NULL))))
+     LEFT JOIN "public"."v_stack_summary" "st" ON (("st"."property_id" = "p"."id")))
+     LEFT JOIN "public"."vendor" "v" ON (("lower"("v"."name") = "lower"(("m"."attributes" ->> 'cm_declare'::"text")))));
+
+
+ALTER VIEW "public"."v_project_property" OWNER TO "postgres";
 
 
 CREATE OR REPLACE VIEW "public"."v_property_api" WITH ("security_invoker"='true') AS
@@ -1212,15 +1484,137 @@ CREATE OR REPLACE VIEW "public"."v_property_api" WITH ("security_invoker"='true'
 ALTER VIEW "public"."v_property_api" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."vendor" (
-    "code" "text" NOT NULL,
-    "name" "text" NOT NULL,
-    "is_partner" boolean DEFAULT false,
-    "extranet_url_template" "text"
-);
+CREATE OR REPLACE VIEW "public"."v_property_card" AS
+ SELECT "p"."id",
+    "p"."code",
+    "p"."name",
+    "p"."logo_url",
+    "p"."country",
+    "p"."city",
+    "p"."territory_code",
+    "p"."address",
+    "p"."property_type",
+    "p"."star_rating",
+    "p"."rooms_total",
+    "p"."rooms_online",
+    "p"."website",
+    "p"."booking_engine_url",
+    ("p"."lifecycle_status")::"text" AS "lifecycle_status",
+    "p"."online_presence_score",
+    "p"."online_presence_date",
+    "p"."support_language",
+    "p"."support_whatsapp",
+    "p"."stack_surveyed_at",
+    "g"."id" AS "group_id",
+    "g"."name" AS "group_name",
+    ("g"."type")::"text" AS "group_type",
+    "le"."id" AS "legal_entity_id",
+    "le"."legal_name",
+    "le"."ice",
+    "le"."rc_number",
+    "p"."billing_entity_code",
+    "so"."full_name" AS "sales_owner_name",
+    "so"."email" AS "sales_owner_email",
+    "co"."full_name" AS "csm_owner_name",
+    "co"."email" AS "csm_owner_email",
+    "st"."stack",
+    "st"."roles_covered",
+    "st"."roles_total",
+    "st"."roles_hws",
+    "st"."roles_rival",
+    ( SELECT "min"("s"."renewal_date") AS "min"
+           FROM "public"."subscription" "s"
+          WHERE (("s"."property_id" = "p"."id") AND ("s"."status" = 'active'::"public"."sub_status") AND ("s"."renewal_date" >= CURRENT_DATE))) AS "next_renewal_date",
+    ( SELECT ("min"("s"."renewal_date") - CURRENT_DATE)
+           FROM "public"."subscription" "s"
+          WHERE (("s"."property_id" = "p"."id") AND ("s"."status" = 'active'::"public"."sub_status") AND ("s"."renewal_date" >= CURRENT_DATE))) AS "next_renewal_in_days",
+    ( SELECT "count"(*) AS "count"
+           FROM "public"."subscription" "s"
+          WHERE (("s"."property_id" = "p"."id") AND ("s"."status" = 'active'::"public"."sub_status"))) AS "active_subscriptions",
+    ( SELECT "min"("s"."activation_date") AS "min"
+           FROM "public"."subscription" "s"
+          WHERE ("s"."property_id" = "p"."id")) AS "first_activation_date",
+    ( SELECT "count"(*) AS "count"
+           FROM "public"."gosiyaha_dossier" "d"
+          WHERE ("d"."property_id" = "p"."id")) AS "gosiyaha_dossiers",
+    ( SELECT "count"(*) AS "count"
+           FROM "public"."contact" "c"
+          WHERE ("c"."property_id" = "p"."id")) AS "contacts_count",
+    ( SELECT "count"(*) AS "count"
+           FROM "public"."document" "dc"
+          WHERE ("dc"."property_id" = "p"."id")) AS "documents_count",
+    ( SELECT COALESCE("jsonb_agg"("jsonb_build_object"('project_code', "pj"."code", 'project_name', "pj"."name", 'status', ("pm"."status")::"text", 'since', "pm"."since")), '[]'::"jsonb") AS "coalesce"
+           FROM ("public"."project_membership" "pm"
+             JOIN "public"."project" "pj" ON (("pj"."id" = "pm"."project_id")))
+          WHERE ("pm"."property_id" = "p"."id")) AS "projects",
+    "p"."custom_fields",
+    "p"."created_at",
+    "p"."updated_at"
+   FROM ((((("public"."property" "p"
+     LEFT JOIN "public"."hotel_group" "g" ON (("g"."id" = "p"."group_id")))
+     LEFT JOIN "public"."legal_entity" "le" ON (("le"."id" = "p"."legal_entity_id")))
+     LEFT JOIN "public"."app_user" "so" ON (("so"."id" = "p"."sales_owner")))
+     LEFT JOIN "public"."app_user" "co" ON (("co"."id" = "p"."csm_owner")))
+     LEFT JOIN "public"."v_stack_summary" "st" ON (("st"."property_id" = "p"."id")))
+  WHERE ("p"."merged_into" IS NULL);
 
 
-ALTER TABLE "public"."vendor" OWNER TO "postgres";
+ALTER VIEW "public"."v_property_card" OWNER TO "postgres";
+
+
+CREATE OR REPLACE VIEW "public"."v_property_list" AS
+ SELECT "p"."id",
+    "p"."code",
+    "p"."name",
+    "p"."city",
+    "p"."country",
+    "p"."territory_code",
+    "p"."property_type",
+    "p"."star_rating",
+    "p"."rooms_total",
+    ("p"."lifecycle_status")::"text" AS "lifecycle_status",
+    "g"."name" AS "group_name",
+    "so"."full_name" AS "sales_owner_name",
+    "st"."roles_covered",
+    "st"."roles_total",
+    "st"."roles_hws",
+    "st"."roles_rival",
+    "st"."stack",
+    "c"."next_renewal_date",
+    "c"."next_renewal_in_days",
+    "c"."active_subscriptions",
+    "c"."gosiyaha_dossiers",
+    (EXISTS ( SELECT 1
+           FROM "public"."subscription" "s"
+          WHERE (("s"."property_id" = "p"."id") AND ("s"."status" = 'active'::"public"."sub_status") AND ("s"."vendor_code" = 'hotelrunner'::"text")))) AS "is_hotelrunner",
+    (EXISTS ( SELECT 1
+           FROM "public"."subscription" "s"
+          WHERE (("s"."property_id" = "p"."id") AND ("s"."status" = 'active'::"public"."sub_status") AND ("s"."vendor_code" = 'centra'::"text")))) AS "is_centra",
+    (EXISTS ( SELECT 1
+           FROM "public"."subscription" "s"
+          WHERE (("s"."property_id" = "p"."id") AND ("s"."status" = 'active'::"public"."sub_status") AND ("s"."vendor_code" = 'simple_booking'::"text")))) AS "is_simple_booking",
+    (EXISTS ( SELECT 1
+           FROM "public"."subscription" "s"
+          WHERE (("s"."property_id" = "p"."id") AND ("s"."status" = 'active'::"public"."sub_status") AND ("s"."vendor_code" = 'siteminder'::"text")))) AS "is_siteminder",
+    (EXISTS ( SELECT 1
+           FROM ("public"."project_membership" "pm"
+             JOIN "public"."project" "pj" ON (("pj"."id" = "pm"."project_id")))
+          WHERE (("pm"."property_id" = "p"."id") AND ("pj"."code" = 'MGH_MARRAKECH'::"text")))) AS "is_mgh",
+    ("c"."gosiyaha_dossiers" > 0) AS "is_gosiyaha",
+    (EXISTS ( SELECT 1
+           FROM ("public"."subscription" "s"
+             JOIN "public"."vendor" "v" ON (("v"."code" = "s"."vendor_code")))
+          WHERE (("s"."property_id" = "p"."id") AND ("s"."status" = 'active'::"public"."sub_status") AND ("v"."is_partner" = false)))) AS "has_rival_stack",
+    "p"."updated_at"
+   FROM (((("public"."property" "p"
+     LEFT JOIN "public"."hotel_group" "g" ON (("g"."id" = "p"."group_id")))
+     LEFT JOIN "public"."app_user" "so" ON (("so"."id" = "p"."sales_owner")))
+     LEFT JOIN "public"."v_stack_summary" "st" ON (("st"."property_id" = "p"."id")))
+     LEFT JOIN "public"."v_property_card" "c" ON (("c"."id" = "p"."id")))
+  WHERE ("p"."merged_into" IS NULL);
+
+
+ALTER VIEW "public"."v_property_list" OWNER TO "postgres";
 
 
 CREATE OR REPLACE VIEW "public"."v_property_stack" WITH ("security_invoker"='true') AS
@@ -2773,17 +3167,47 @@ GRANT ALL ON TABLE "public"."territory" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."v_gosiyaha_ready" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."v_alerts" TO "anon";
+GRANT ALL ON TABLE "public"."v_alerts" TO "authenticated";
+GRANT ALL ON TABLE "public"."v_alerts" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."v_gosiyaha_livrables" TO "anon";
 GRANT ALL ON TABLE "public"."v_gosiyaha_livrables" TO "authenticated";
 GRANT ALL ON TABLE "public"."v_gosiyaha_livrables" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."v_gosiyaha_ready" TO "service_role";
-
-
-
 GRANT ALL ON TABLE "public"."v_gosiyaha_record" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."v_lead_pipeline" TO "anon";
+GRANT ALL ON TABLE "public"."v_lead_pipeline" TO "authenticated";
+GRANT ALL ON TABLE "public"."v_lead_pipeline" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."vendor" TO "anon";
+GRANT ALL ON TABLE "public"."vendor" TO "authenticated";
+GRANT ALL ON TABLE "public"."vendor" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."v_stack_summary" TO "anon";
+GRANT ALL ON TABLE "public"."v_stack_summary" TO "authenticated";
+GRANT ALL ON TABLE "public"."v_stack_summary" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."v_project_property" TO "anon";
+GRANT ALL ON TABLE "public"."v_project_property" TO "authenticated";
+GRANT ALL ON TABLE "public"."v_project_property" TO "service_role";
 
 
 
@@ -2793,9 +3217,15 @@ GRANT ALL ON TABLE "public"."v_property_api" TO "service_role";
 
 
 
-GRANT ALL ON TABLE "public"."vendor" TO "anon";
-GRANT ALL ON TABLE "public"."vendor" TO "authenticated";
-GRANT ALL ON TABLE "public"."vendor" TO "service_role";
+GRANT ALL ON TABLE "public"."v_property_card" TO "anon";
+GRANT ALL ON TABLE "public"."v_property_card" TO "authenticated";
+GRANT ALL ON TABLE "public"."v_property_card" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."v_property_list" TO "anon";
+GRANT ALL ON TABLE "public"."v_property_list" TO "authenticated";
+GRANT ALL ON TABLE "public"."v_property_list" TO "service_role";
 
 
 
