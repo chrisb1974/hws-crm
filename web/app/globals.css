@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Jetons de design HWS. Tailwind v4 n'utilise plus tailwind.config.ts : le
+   theme se declare en CSS via @theme. Chaque jeton ci-dessous produit les
+   utilitaires correspondants (bg-navy-500, text-encre-45, border-bordure...).
+   --------------------------------------------------------------------------- */
+@theme {
+  --color-navy-100: #f2f3f8;
+  --color-navy-200: #dde0ec;
+  --color-navy-300: #b7bdd7;
+  --color-navy-400: #7884b4;
+  --color-navy-500: #1e3282;
+  --color-navy-600: #1a2b70;
+  --color-navy-700: #16245f;
+  --color-navy-900: #0e173b;
+
+  --color-orange-100: #fdede6;
+  --color-orange-500: #ee7547;
+  --color-orange-700: #b34a1f;
+
+  --color-encre-100: #1d1f20;
+  --color-encre-75: #5d5d60;
+  --color-encre-60: #6a6b6d;
+  --color-encre-45: #8b8c8e;
+  --color-encre-30: #b7b7ba;
+
+  --color-surface: #ffffff;
+  --color-fond: #f7f7f8;
+  --color-bordure: #e9e9ea;
+  --color-bordure-forte: #d4d4d6;
+
+  --color-ok: #1e7a4d;
+  --color-ok-fond: #e7f3ec;
+  --color-alerte: #b8860b;
+  --color-alerte-fond: #fbf3dc;
+  --color-danger: #a32020;
+  --color-danger-fond: #faeaea;
+
+  --spacing-sidebar: 232px;
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--color-fond);
+    color: var(--color-encre-100);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Regle 4 : focus toujours visible, y compris a la navigation clavier
+     dans le tableau. */
+  :focus-visible {
+    outline: 2px solid var(--color-navy-500);
+    outline-offset: 1px;
+  }
+
+  ::selection {
+    background-color: var(--color-navy-200);
+  }
+}
+
+/* Etat « concurrent constate » du croquis : hachures a 135 degres. */
+.stack-hachure {
+  background-color: var(--color-surface);
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--color-encre-30) 0 1px,
+    transparent 1px 5px
+  );
+}
+
+/* Terme recherche surligne. */
+.surlignage {
+  background-color: #fde68a;
+  border-radius: 2px;
+  color: var(--color-encre-100);
+  padding: 0 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
