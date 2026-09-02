@@ -1,6 +1,9 @@
 import { createClient } from "@/lib/supabase/server";
 import { t } from "@/lib/i18n";
 
+// Session Supabase lue a chaque requete : rien ne doit etre prerendu.
+export const dynamic = "force-dynamic";
+
 export default async function CrmLayout({ children }: LayoutProps<"/etablissements">) {
   const supabase = await createClient();
   const {

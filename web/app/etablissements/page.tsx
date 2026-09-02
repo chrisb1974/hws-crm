@@ -3,6 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { t } from "@/lib/i18n";
 import type { PropertyRow } from "@/lib/types";
 
+// Session Supabase lue a chaque requete : rien ne doit etre prerendu.
+export const dynamic = "force-dynamic";
+
 /**
  * Source unique : la vue v_property_list. Aucune jointure, aucun calcul.
  *

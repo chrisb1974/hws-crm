@@ -1,6 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { supabaseEnv } from "@/lib/supabase/env";
 
 /**
  * `proxy` remplace `middleware` depuis Next.js 16 (meme comportement, nom du
@@ -18,7 +17,15 @@ function isPublic(pathname: string): boolean {
 }
 
 export async function proxy(request: NextRequest) {
-  const { url, anonKey } = supabaseEnv();
+  // Lecture et verification a l'appel, jamais a l'import.
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anonKey) {
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL et NEXT_PUBLIC_SUPABASE_ANON_KEY doivent etre definies.",
+    );
+  }
+
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(url, anonKey, {

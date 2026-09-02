@@ -1,6 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
+// Session Supabase lue a chaque requete : rien ne doit etre prerendu.
+export const dynamic = "force-dynamic";
+
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
   await supabase.auth.signOut();

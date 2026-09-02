@@ -2,6 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 
+// Session Supabase lue a chaque requete : rien ne doit etre prerendu.
+export const dynamic = "force-dynamic";
+
 /**
  * Retour du lien magique. Supabase envoie soit `?code=` (flux PKCE, le cas par
  * defaut avec @supabase/ssr), soit `?token_hash=&type=` si le gabarit d'e-mail
