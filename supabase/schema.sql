@@ -62,6 +62,28 @@ CREATE TYPE "public"."app_role" AS ENUM (
 ALTER TYPE "public"."app_role" OWNER TO "postgres";
 
 
+CREATE TYPE "public"."commercial_terms" AS ENUM (
+    'payant',
+    'offert',
+    'essai',
+    'subventionne'
+);
+
+
+ALTER TYPE "public"."commercial_terms" OWNER TO "postgres";
+
+
+CREATE TYPE "public"."field_decision" AS ENUM (
+    'garder',
+    'archiver',
+    'supprimer',
+    'a_statuer'
+);
+
+
+ALTER TYPE "public"."field_decision" OWNER TO "postgres";
+
+
 CREATE TYPE "public"."field_storage" AS ENUM (
     'column',
     'jsonb'
@@ -102,6 +124,28 @@ CREATE TYPE "public"."hws_stance" AS ENUM (
 
 
 ALTER TYPE "public"."hws_stance" OWNER TO "postgres";
+
+
+CREATE TYPE "public"."import_action" AS ENUM (
+    'create',
+    'update',
+    'skip',
+    'error'
+);
+
+
+ALTER TYPE "public"."import_action" OWNER TO "postgres";
+
+
+CREATE TYPE "public"."import_status" AS ENUM (
+    'draft',
+    'applied',
+    'reverted',
+    'failed'
+);
+
+
+ALTER TYPE "public"."import_status" OWNER TO "postgres";
 
 
 CREATE TYPE "public"."lead_status" AS ENUM (
@@ -163,6 +207,24 @@ CREATE TYPE "public"."sub_status" AS ENUM (
 
 
 ALTER TYPE "public"."sub_status" OWNER TO "postgres";
+
+
+CREATE TYPE "public"."subscription_event_kind" AS ENUM (
+    'activation',
+    'plan_rename',
+    'plan_change',
+    'upgrade',
+    'downgrade',
+    'renewal',
+    'terms_change',
+    'suspension',
+    'reactivation',
+    'migration',
+    'termination'
+);
+
+
+ALTER TYPE "public"."subscription_event_kind" OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."current_app_role"() RETURNS "public"."app_role"
@@ -283,6 +345,44 @@ $_$;
 ALTER FUNCTION "public"."immutable_unaccent"("text") OWNER TO "postgres";
 
 
+CREATE OR REPLACE FUNCTION "public"."import_revert"("p_batch" "uuid") RETURNS TABLE("restored" integer, "deleted" integer)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare r record; n_restored int := 0; n_deleted int := 0;
+begin
+  if (select status from import_batch where id = p_batch) <> 'applied' then
+    raise exception 'Ce lot n''est pas dans un état annulable';
+  end if;
+
+  for r in select * from import_row
+            where batch_id = p_batch and action in ('create','update')
+            order by line_no desc loop
+    if r.action = 'update' and r.before is not null then
+      update property set
+        name         = coalesce(r.before->>'name', name),
+        city         = r.before->>'city',
+        website      = r.before->>'website',
+        rooms_total  = nullif(r.before->>'rooms_total','')::int,
+        star_rating  = r.before->>'star_rating',
+        property_type= r.before->>'property_type',
+        updated_at   = now()
+      where id = r.target_id;
+      n_restored := n_restored + 1;
+    elsif r.action = 'create' then
+      delete from property where id = r.target_id;
+      n_deleted := n_deleted + 1;
+    end if;
+  end loop;
+
+  update import_batch set status = 'reverted', reverted_at = now() where id = p_batch;
+  return query select n_restored, n_deleted;
+end $$;
+
+
+ALTER FUNCTION "public"."import_revert"("p_batch" "uuid") OWNER TO "postgres";
+
+
 CREATE OR REPLACE FUNCTION "public"."is_active_staff"() RETURNS boolean
     LANGUAGE "sql" STABLE SECURITY DEFINER
     SET "search_path" TO 'public'
@@ -323,6 +423,50 @@ $_$;
 
 
 ALTER FUNCTION "public"."next_property_code"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."plan_change"("p_subscription" "uuid", "p_new_plan" integer, "p_kind" "public"."subscription_event_kind" DEFAULT 'plan_change'::"public"."subscription_event_kind", "p_on" "date" DEFAULT CURRENT_DATE, "p_note" "text" DEFAULT NULL::"text") RETURNS "void"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare v_old int;
+begin
+  select plan_id into v_old from subscription where id = p_subscription;
+  insert into subscription_event (subscription_id, kind, occurred_on, from_plan_id, to_plan_id, note)
+  values (p_subscription, p_kind, p_on, v_old, p_new_plan, p_note);
+  update subscription set plan_id = p_new_plan where id = p_subscription;
+end $$;
+
+
+ALTER FUNCTION "public"."plan_change"("p_subscription" "uuid", "p_new_plan" integer, "p_kind" "public"."subscription_event_kind", "p_on" "date", "p_note" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."plan_rename"("p_vendor" "text", "p_old_code" "text", "p_new_code" "text", "p_new_name" "text" DEFAULT NULL::"text") RETURNS integer
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    SET "search_path" TO 'public'
+    AS $$
+declare v_plan int; n int;
+begin
+  select pl.id into v_plan
+    from plan pl join product pr on pr.id = pl.product_id
+   where pr.vendor_code = p_vendor and pl.code = p_old_code
+   limit 1;
+  if v_plan is null then
+    raise exception 'Formule % introuvable chez %', p_old_code, p_vendor;
+  end if;
+
+  insert into subscription_event (subscription_id, kind, from_plan_id, to_plan_id, note)
+  select s.id, 'plan_rename', v_plan, v_plan,
+         format('%s renommee %s par %s', p_old_code, p_new_code, p_vendor)
+    from subscription s where s.plan_id = v_plan;
+  get diagnostics n = row_count;
+
+  update plan set code = p_new_code, name = coalesce(p_new_name, name) where id = v_plan;
+  return n;
+end $$;
+
+
+ALTER FUNCTION "public"."plan_rename"("p_vendor" "text", "p_old_code" "text", "p_new_code" "text", "p_new_name" "text") OWNER TO "postgres";
 
 
 CREATE OR REPLACE FUNCTION "public"."property_set_name_normalized"() RETURNS "trigger"
@@ -587,11 +731,29 @@ CREATE TABLE IF NOT EXISTS "public"."field_definition" (
     "gosiyaha_phase" smallint,
     "consumed_by_script" boolean DEFAULT false,
     "deprecated_at" timestamp with time zone,
-    "replaced_by" "text"
+    "replaced_by" "text",
+    "computed" boolean DEFAULT false NOT NULL,
+    "computed_from" "text",
+    "computed_rule" "text",
+    "zoho_module" "text",
+    "zoho_api_name" "text",
+    "decision" "public"."field_decision" DEFAULT 'a_statuer'::"public"."field_decision" NOT NULL,
+    "fill_rate" numeric(5,4),
+    "target_entity" "text",
+    "target_column" "text",
+    "note" "text"
 );
 
 
 ALTER TABLE "public"."field_definition" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."field_definition"."decision" IS 'garder = repris dans le CRM · archiver = conserve en lecture seule dans custom_fields · supprimer = abandonne.';
+
+
+
+COMMENT ON COLUMN "public"."field_definition"."target_entity" IS 'Table du modele qui porte l information. Plusieurs champs Zoho peuvent viser la meme cible : les triplets booleen + date activation + date renouvellement deviennent une seule ligne subscription.';
+
 
 
 CREATE SEQUENCE IF NOT EXISTS "public"."field_definition_id_seq"
@@ -671,11 +833,34 @@ CREATE TABLE IF NOT EXISTS "public"."gosiyaha_dossier" (
     "owner_user" "uuid",
     "data" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"(),
-    "updated_at" timestamp with time zone DEFAULT "now"()
+    "updated_at" timestamp with time zone DEFAULT "now"(),
+    "adr_final" numeric(10,2),
+    "occupancy_final" numeric(5,2),
+    "project_start" "date",
+    "adr_objective" numeric(10,2) GENERATED ALWAYS AS (("adr_final" - (50)::numeric)) STORED,
+    "adr_initial" numeric(10,2) GENERATED ALWAYS AS (("adr_final" - (100)::numeric)) STORED,
+    "occupancy_objective" numeric(5,2) GENERATED ALWAYS AS (("occupancy_final" - (4)::numeric)) STORED,
+    "occupancy_initial" numeric(5,2) GENERATED ALWAYS AS (("occupancy_final" - (8)::numeric)) STORED,
+    "cadrage" "date" GENERATED ALWAYS AS ("project_start") STORED,
+    "livraison_licence" "date" GENERATED ALWAYS AS (("project_start" + 4)) STORED,
+    "installation_du" "date" GENERATED ALWAYS AS (("project_start" + 4)) STORED,
+    "installation_au" "date" GENERATED ALWAYS AS (("project_start" + 7)) STORED,
+    "formation_1" "date" GENERATED ALWAYS AS (("project_start" + 9)) STORED,
+    "mise_en_ligne" "date" GENERATED ALWAYS AS (("project_start" + 11)) STORED,
+    "mise_en_ligne_au" "date" GENERATED ALWAYS AS (("project_start" + 13)) STORED,
+    "formation_2" "date" GENERATED ALWAYS AS (("project_start" + 14)) STORED
 );
 
 
 ALTER TABLE "public"."gosiyaha_dossier" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."gosiyaha_dossier"."adr_final" IS 'Seule valeur ADR saisie. Objectif = final - 50, initial = final - 100.';
+
+
+
+COMMENT ON COLUMN "public"."gosiyaha_dossier"."project_start" IS 'Seule date de cadrage saisie. Les huit jalons suivants sont calcules : cadrage J+0, licence et installation J+4, fin installation J+7, formation 1 J+9, mise en ligne J+11 a J+13, formation 2 J+14.';
+
 
 
 CREATE TABLE IF NOT EXISTS "public"."gosiyaha_prerequisite" (
@@ -719,6 +904,50 @@ CREATE TABLE IF NOT EXISTS "public"."hotel_group" (
 
 
 ALTER TABLE "public"."hotel_group" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."import_batch" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "entity" "text" NOT NULL,
+    "filename" "text",
+    "status" "public"."import_status" DEFAULT 'draft'::"public"."import_status" NOT NULL,
+    "rows_total" integer DEFAULT 0 NOT NULL,
+    "rows_create" integer DEFAULT 0 NOT NULL,
+    "rows_update" integer DEFAULT 0 NOT NULL,
+    "rows_error" integer DEFAULT 0 NOT NULL,
+    "created_by" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "applied_at" timestamp with time zone,
+    "reverted_at" timestamp with time zone,
+    "note" "text"
+);
+
+
+ALTER TABLE "public"."import_batch" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."import_batch" IS 'Un dépôt de fichier. Rien n''est écrit tant que status = draft.';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."import_row" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "batch_id" "uuid" NOT NULL,
+    "line_no" integer NOT NULL,
+    "entity_key" "text",
+    "target_id" "uuid",
+    "action" "public"."import_action" NOT NULL,
+    "before" "jsonb",
+    "after" "jsonb",
+    "errors" "text"[] DEFAULT '{}'::"text"[] NOT NULL
+);
+
+
+ALTER TABLE "public"."import_row" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."import_row"."before" IS 'État de la fiche avant écriture : seule garantie d''annulation.';
+
 
 
 CREATE TABLE IF NOT EXISTS "public"."integration" (
@@ -1049,11 +1278,22 @@ CREATE TABLE IF NOT EXISTS "public"."property" (
     "custom_fields" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"(),
     "updated_at" timestamp with time zone DEFAULT "now"(),
-    "website_status" "text"
+    "website_status" "text",
+    "hr_admin_url" "text",
+    "lead_source" "text",
+    "external_refs" "jsonb" DEFAULT '{}'::"jsonb" NOT NULL
 );
 
 
 ALTER TABLE "public"."property" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."property"."hr_admin_url" IS 'Lien direct vers l extranet HotelRunner. Outil quotidien du support.';
+
+
+
+COMMENT ON COLUMN "public"."property"."external_refs" IS 'Identifiants de l établissement chez les fournisseurs, ex. {"hotelrunner":"180202752"}. Sert la recherche globale.';
+
 
 
 CREATE TABLE IF NOT EXISTS "public"."subscription" (
@@ -1085,11 +1325,23 @@ CREATE TABLE IF NOT EXISTS "public"."subscription" (
     "vendor_account_ref" "text",
     "reconciliation_flag" "text" DEFAULT 'ok'::"text",
     "source_note" "text",
-    "created_at" timestamp with time zone DEFAULT "now"()
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "terms" "public"."commercial_terms" DEFAULT 'payant'::"public"."commercial_terms" NOT NULL,
+    "terms_until" "date",
+    "terms_note" "text",
+    "licence_code" "text"
 );
 
 
 ALTER TABLE "public"."subscription" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."subscription"."terms" IS 'payant, offert, essai ou subventionne. Un abonnement offert garde sale_price a null : absence de prix, pas prix zero.';
+
+
+
+COMMENT ON COLUMN "public"."subscription"."licence_code" IS 'Accord commercial du contrat, distinct du produit vendu. Un renommage de formule ne le touche pas.';
+
 
 
 CREATE TABLE IF NOT EXISTS "public"."subscription_billing_snapshot" (
@@ -1122,6 +1374,28 @@ ALTER SEQUENCE "public"."subscription_billing_snapshot_id_seq" OWNED BY "public"
 
 
 
+CREATE TABLE IF NOT EXISTS "public"."subscription_event" (
+    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
+    "subscription_id" "uuid" NOT NULL,
+    "kind" "public"."subscription_event_kind" NOT NULL,
+    "occurred_on" "date" DEFAULT CURRENT_DATE NOT NULL,
+    "from_plan_id" integer,
+    "to_plan_id" integer,
+    "from_terms" "public"."commercial_terms",
+    "to_terms" "public"."commercial_terms",
+    "note" "text",
+    "created_by" "uuid",
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."subscription_event" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."subscription_event" IS 'Historique d un abonnement. Un renommage de formule ou un changement de palier ne cree jamais un nouvel abonnement : la continuite du contrat porte l anciennete client.';
+
+
+
 CREATE TABLE IF NOT EXISTS "public"."territory" (
     "code" "text" NOT NULL,
     "label_fr" "text",
@@ -1150,6 +1424,24 @@ ALTER VIEW "public"."v_gosiyaha_ready" OWNER TO "postgres";
 
 
 CREATE OR REPLACE VIEW "public"."v_alerts" AS
+ SELECT ('overdue_'::"text" || ("s"."id")::"text") AS "alert_key",
+    'renewal_overdue'::"text" AS "kind",
+    'critical'::"text" AS "severity",
+    "s"."renewal_date" AS "due_date",
+    ("s"."renewal_date" - CURRENT_DATE) AS "days_left",
+    "p"."id" AS "property_id",
+    "p"."code" AS "property_code",
+    "p"."name" AS "property_name",
+    "s"."vendor_code",
+    ("s"."role")::"text" AS "role",
+    COALESCE("u"."full_name", 'Non assigné'::"text") AS "owner_name",
+    "p"."sales_owner" AS "owner_id",
+    'Confirmer le renouvellement ou acter la perte'::"text" AS "action_label"
+   FROM (("public"."subscription" "s"
+     JOIN "public"."property" "p" ON ((("p"."id" = "s"."property_id") AND ("p"."merged_into" IS NULL))))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "p"."sales_owner")))
+  WHERE (("s"."status" = 'active'::"public"."sub_status") AND ("s"."renewal_date" < CURRENT_DATE))
+UNION ALL
  SELECT ('renewal_'::"text" || ("s"."id")::"text") AS "alert_key",
     'renewal'::"text" AS "kind",
         CASE
@@ -1267,6 +1559,49 @@ UNION ALL
 
 
 ALTER VIEW "public"."v_alerts" OWNER TO "postgres";
+
+
+CREATE OR REPLACE VIEW "public"."v_gosiyaha_board" AS
+ SELECT "d"."id",
+    "d"."code",
+    "split_part"("d"."code", ' '::"text", 1) AS "marche_code",
+    "p"."id" AS "property_id",
+    "p"."code" AS "property_code",
+    "p"."name" AS "property_name",
+    "p"."city",
+    ("p"."logo_url" IS NOT NULL) AS "a_un_logo",
+    "le"."legal_name",
+    "js"."code" AS "statut_code",
+    "js"."label" AS "statut",
+    "js"."phase",
+    "js"."responsible" AS "responsable",
+    "js"."is_terminal",
+    (("d"."data" ->> 'Status Jira changé le'::"text"))::"date" AS "statut_depuis",
+    (CURRENT_DATE - (("d"."data" ->> 'Status Jira changé le'::"text"))::"date") AS "jours_dans_statut",
+    ("d"."data" ->> 'Nº de Marché MarocPME'::"text") AS "marche",
+    (NULLIF(("d"."data" ->> 'Montant du Devis'::"text"), ''::"text"))::numeric AS "montant_devis",
+    (NULLIF(("d"."data" ->> 'Facture Hotel 10% Amount'::"text"), ''::"text"))::numeric AS "facture_10",
+    (NULLIF(("d"."data" ->> 'Facture MarocPME 90% Amount'::"text"), ''::"text"))::numeric AS "facture_90",
+    COALESCE(("d"."data" ->> 'Currency'::"text"), 'MAD'::"text") AS "devise",
+    COALESCE((("d"."data" ->> 'Dossier Finalisé & Payé'::"text"))::boolean, false) AS "paye",
+    COALESCE((("d"."data" ->> 'CREATE THE LIVRABLES'::"text"))::boolean, false) AS "livrables_generes",
+    ("d"."data" ->> 'Nom Signataire'::"text") AS "signataire",
+    ("d"."data" ->> '8. Ville Shooting'::"text") AS "ville_shooting",
+    (NULLIF(("d"."data" ->> 'ADR Valeur Initial'::"text"), ''::"text"))::numeric AS "adr_initial",
+    (NULLIF(("d"."data" ->> 'ADR Objective'::"text"), ''::"text"))::numeric AS "adr_objectif",
+    (NULLIF(("d"."data" ->> 'Occupancy ValeurInitial'::"text"), ''::"text"))::numeric AS "occ_initial",
+    (NULLIF(("d"."data" ->> 'Occupancy Valeur Objective'::"text"), ''::"text"))::numeric AS "occ_objectif",
+    "u"."full_name" AS "owner_name",
+    "d"."updated_at"
+   FROM ((((("public"."gosiyaha_dossier" "d"
+     JOIN "public"."property" "p" ON ((("p"."id" = "d"."property_id") AND ("p"."merged_into" IS NULL))))
+     LEFT JOIN "public"."legal_entity" "le" ON (("le"."id" = "d"."legal_entity_id")))
+     LEFT JOIN "public"."jira_status_alias" "a" ON (("a"."raw_value" = ("d"."data" ->> 'Status Jira'::"text"))))
+     LEFT JOIN "public"."jira_status" "js" ON (("js"."code" = "a"."status_code")))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "d"."owner_user")));
+
+
+ALTER VIEW "public"."v_gosiyaha_board" OWNER TO "postgres";
 
 
 CREATE OR REPLACE VIEW "public"."v_gosiyaha_livrables" WITH ("security_invoker"='true') AS
@@ -1645,6 +1980,85 @@ CREATE OR REPLACE VIEW "public"."v_property_stack" WITH ("security_invoker"='tru
 ALTER VIEW "public"."v_property_stack" OWNER TO "postgres";
 
 
+CREATE OR REPLACE VIEW "public"."v_subscription_list" AS
+ SELECT "s"."id",
+    "p"."id" AS "property_id",
+    "p"."code" AS "property_code",
+    "p"."name" AS "property_name",
+    "p"."city",
+    "p"."country",
+    "p"."territory_code",
+    "g"."name" AS "group_name",
+    ("s"."role")::"text" AS "role",
+    "s"."vendor_code",
+    "v"."name" AS "vendor_name",
+    "v"."is_partner",
+    "pr"."code" AS "product_code",
+    "pr"."name" AS "product_name",
+    "pl"."code" AS "plan_code",
+    "pl"."name" AS "plan_name",
+    ("pl"."roles_covered")::"text"[] AS "plan_roles",
+    COALESCE("s"."is_hws_offer_override", ("pr"."stance" = 'offer'::"public"."hws_stance"), "v"."is_partner") AS "vendu_par_hws",
+    ("s"."status")::"text" AS "status",
+    ("s"."terms")::"text" AS "terms",
+    "s"."terms_until",
+    "s"."funded_by",
+    "s"."subsidy_end_date",
+    "s"."activation_date",
+    "s"."renewal_date",
+    ("s"."renewal_date" - CURRENT_DATE) AS "jours_avant_renouvellement",
+        CASE
+            WHEN ("s"."renewal_date" IS NULL) THEN 'sans_date'::"text"
+            WHEN ("s"."renewal_date" < CURRENT_DATE) THEN 'depasse'::"text"
+            WHEN (("s"."renewal_date" - CURRENT_DATE) <= 7) THEN 'j7'::"text"
+            WHEN (("s"."renewal_date" - CURRENT_DATE) <= 30) THEN 'j30'::"text"
+            WHEN (("s"."renewal_date" - CURRENT_DATE) <= 60) THEN 'j60'::"text"
+            ELSE 'ok'::"text"
+        END AS "alerte_renouvellement",
+    "s"."commitment_months",
+    "s"."notice_days",
+    "s"."notice_deadline",
+    "s"."billing_frequency",
+    "s"."billing_unit",
+    "s"."vendor_account_ref",
+    "s"."onboarding_status",
+    "p"."billing_entity_code",
+    "u"."full_name" AS "sales_owner_name",
+    ( SELECT "min"("x"."activation_date") AS "min"
+           FROM "public"."subscription" "x"
+          WHERE ("x"."property_id" = "p"."id")) AS "client_depuis",
+    ( SELECT "count"(*) AS "count"
+           FROM "public"."subscription_event" "e"
+          WHERE ("e"."subscription_id" = "s"."id")) AS "evenements",
+    ( SELECT "max"("e"."occurred_on") AS "max"
+           FROM "public"."subscription_event" "e"
+          WHERE ("e"."subscription_id" = "s"."id")) AS "dernier_evenement",
+    "s"."created_at"
+   FROM (((((("public"."subscription" "s"
+     JOIN "public"."property" "p" ON ((("p"."id" = "s"."property_id") AND ("p"."merged_into" IS NULL))))
+     JOIN "public"."vendor" "v" ON (("v"."code" = "s"."vendor_code")))
+     LEFT JOIN "public"."plan" "pl" ON (("pl"."id" = "s"."plan_id")))
+     LEFT JOIN "public"."product" "pr" ON (("pr"."id" = "pl"."product_id")))
+     LEFT JOIN "public"."hotel_group" "g" ON (("g"."id" = "p"."group_id")))
+     LEFT JOIN "public"."app_user" "u" ON (("u"."id" = "p"."sales_owner")));
+
+
+ALTER VIEW "public"."v_subscription_list" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."vendor_licence" (
+    "code" "text" NOT NULL,
+    "vendor_code" "text" NOT NULL,
+    "label" "text" NOT NULL,
+    "billed_by" "text",
+    "is_active" boolean DEFAULT true NOT NULL,
+    "note" "text"
+);
+
+
+ALTER TABLE "public"."vendor_licence" OWNER TO "postgres";
+
+
 CREATE TABLE IF NOT EXISTS "public"."zoho_field_map" (
     "api_name" "text" NOT NULL,
     "field_label" "text" NOT NULL,
@@ -1817,6 +2231,16 @@ ALTER TABLE ONLY "public"."hotel_group"
 
 
 
+ALTER TABLE ONLY "public"."import_batch"
+    ADD CONSTRAINT "import_batch_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."import_row"
+    ADD CONSTRAINT "import_row_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."integration"
     ADD CONSTRAINT "integration_code_key" UNIQUE ("code");
 
@@ -1922,6 +2346,11 @@ ALTER TABLE ONLY "public"."subscription_billing_snapshot"
 
 
 
+ALTER TABLE ONLY "public"."subscription_event"
+    ADD CONSTRAINT "subscription_event_pkey" PRIMARY KEY ("id");
+
+
+
 ALTER TABLE ONLY "public"."subscription"
     ADD CONSTRAINT "subscription_pkey" PRIMARY KEY ("id");
 
@@ -1929,6 +2358,11 @@ ALTER TABLE ONLY "public"."subscription"
 
 ALTER TABLE ONLY "public"."territory"
     ADD CONSTRAINT "territory_pkey" PRIMARY KEY ("code");
+
+
+
+ALTER TABLE ONLY "public"."vendor_licence"
+    ADD CONSTRAINT "vendor_licence_pkey" PRIMARY KEY ("code");
 
 
 
@@ -1958,6 +2392,10 @@ CREATE INDEX "external_id_property_id_idx" ON "public"."external_id" USING "btre
 
 
 
+CREATE UNIQUE INDEX "field_definition_entity_api_uidx" ON "public"."field_definition" USING "btree" ("entity", "api_name");
+
+
+
 CREATE INDEX "generation_run_dossier_id_kind_idx" ON "public"."generation_run" USING "btree" ("dossier_id", "kind");
 
 
@@ -1971,6 +2409,10 @@ CREATE INDEX "gosiyaha_dossier_data_idx" ON "public"."gosiyaha_dossier" USING "g
 
 
 CREATE INDEX "gosiyaha_dossier_property_id_idx" ON "public"."gosiyaha_dossier" USING "btree" ("property_id");
+
+
+
+CREATE INDEX "import_row_batch_idx" ON "public"."import_row" USING "btree" ("batch_id", "line_no");
 
 
 
@@ -2002,6 +2444,10 @@ CREATE INDEX "property_custom_fields_idx" ON "public"."property" USING "gin" ("c
 
 
 
+CREATE INDEX "property_external_refs_idx" ON "public"."property" USING "gin" ("external_refs");
+
+
+
 CREATE INDEX "property_lifecycle_status_idx" ON "public"."property" USING "btree" ("lifecycle_status");
 
 
@@ -2010,11 +2456,23 @@ CREATE INDEX "property_name_normalized_idx" ON "public"."property" USING "btree"
 
 
 
+CREATE INDEX "subscription_event_sub_idx" ON "public"."subscription_event" USING "btree" ("subscription_id", "occurred_on" DESC);
+
+
+
+CREATE INDEX "subscription_licence_idx" ON "public"."subscription" USING "btree" ("licence_code");
+
+
+
 CREATE INDEX "subscription_property_id_role_idx" ON "public"."subscription" USING "btree" ("property_id", "role");
 
 
 
 CREATE INDEX "subscription_renewal_date_idx" ON "public"."subscription" USING "btree" ("renewal_date") WHERE ("status" = 'active'::"public"."sub_status");
+
+
+
+CREATE INDEX "subscription_vendor_ref_idx" ON "public"."subscription" USING "btree" ("vendor_account_ref") WHERE ("vendor_account_ref" IS NOT NULL);
 
 
 
@@ -2122,6 +2580,16 @@ ALTER TABLE ONLY "public"."gosiyaha_prerequisite"
 
 ALTER TABLE ONLY "public"."hotel_group"
     ADD CONSTRAINT "hotel_group_legal_entity_id_fkey" FOREIGN KEY ("legal_entity_id") REFERENCES "public"."legal_entity"("id");
+
+
+
+ALTER TABLE ONLY "public"."import_batch"
+    ADD CONSTRAINT "import_batch_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."app_user"("id");
+
+
+
+ALTER TABLE ONLY "public"."import_row"
+    ADD CONSTRAINT "import_row_batch_id_fkey" FOREIGN KEY ("batch_id") REFERENCES "public"."import_batch"("id") ON DELETE CASCADE;
 
 
 
@@ -2250,6 +2718,31 @@ ALTER TABLE ONLY "public"."subscription"
 
 
 
+ALTER TABLE ONLY "public"."subscription_event"
+    ADD CONSTRAINT "subscription_event_created_by_fkey" FOREIGN KEY ("created_by") REFERENCES "public"."app_user"("id");
+
+
+
+ALTER TABLE ONLY "public"."subscription_event"
+    ADD CONSTRAINT "subscription_event_from_plan_id_fkey" FOREIGN KEY ("from_plan_id") REFERENCES "public"."plan"("id");
+
+
+
+ALTER TABLE ONLY "public"."subscription_event"
+    ADD CONSTRAINT "subscription_event_subscription_id_fkey" FOREIGN KEY ("subscription_id") REFERENCES "public"."subscription"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."subscription_event"
+    ADD CONSTRAINT "subscription_event_to_plan_id_fkey" FOREIGN KEY ("to_plan_id") REFERENCES "public"."plan"("id");
+
+
+
+ALTER TABLE ONLY "public"."subscription"
+    ADD CONSTRAINT "subscription_licence_code_fkey" FOREIGN KEY ("licence_code") REFERENCES "public"."vendor_licence"("code");
+
+
+
 ALTER TABLE ONLY "public"."subscription"
     ADD CONSTRAINT "subscription_plan_id_fkey" FOREIGN KEY ("plan_id") REFERENCES "public"."plan"("id");
 
@@ -2267,6 +2760,11 @@ ALTER TABLE ONLY "public"."subscription"
 
 ALTER TABLE ONLY "public"."subscription"
     ADD CONSTRAINT "subscription_vendor_code_fkey" FOREIGN KEY ("vendor_code") REFERENCES "public"."vendor"("code");
+
+
+
+ALTER TABLE ONLY "public"."vendor_licence"
+    ADD CONSTRAINT "vendor_licence_vendor_code_fkey" FOREIGN KEY ("vendor_code") REFERENCES "public"."vendor"("code");
 
 
 
@@ -2457,6 +2955,12 @@ CREATE POLICY "hotel_group_write" ON "public"."hotel_group" TO "authenticated" U
 
 
 
+ALTER TABLE "public"."import_batch" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."import_row" ENABLE ROW LEVEL SECURITY;
+
+
 ALTER TABLE "public"."integration" ENABLE ROW LEVEL SECURITY;
 
 
@@ -2582,6 +3086,9 @@ CREATE POLICY "subscription_billing_snapshot_write" ON "public"."subscription_bi
 
 
 
+ALTER TABLE "public"."subscription_event" ENABLE ROW LEVEL SECURITY;
+
+
 CREATE POLICY "subscription_read" ON "public"."subscription" FOR SELECT TO "authenticated" USING ("public"."is_active_staff"());
 
 
@@ -2606,6 +3113,9 @@ ALTER TABLE "public"."vendor" ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "vendor_admin_write" ON "public"."vendor" TO "authenticated" USING (("public"."current_app_role"() = 'admin'::"public"."app_role")) WITH CHECK (("public"."current_app_role"() = 'admin'::"public"."app_role"));
 
+
+
+ALTER TABLE "public"."vendor_licence" ENABLE ROW LEVEL SECURITY;
 
 
 CREATE POLICY "vendor_read" ON "public"."vendor" FOR SELECT TO "authenticated" USING ("public"."is_active_staff"());
@@ -2823,6 +3333,12 @@ GRANT ALL ON FUNCTION "public"."immutable_unaccent"("text") TO "service_role";
 
 
 
+GRANT ALL ON FUNCTION "public"."import_revert"("p_batch" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."import_revert"("p_batch" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."import_revert"("p_batch" "uuid") TO "service_role";
+
+
+
 REVOKE ALL ON FUNCTION "public"."is_active_staff"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."is_active_staff"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."is_active_staff"() TO "service_role";
@@ -2839,6 +3355,18 @@ REVOKE ALL ON FUNCTION "public"."next_property_code"() FROM PUBLIC;
 GRANT ALL ON FUNCTION "public"."next_property_code"() TO "anon";
 GRANT ALL ON FUNCTION "public"."next_property_code"() TO "authenticated";
 GRANT ALL ON FUNCTION "public"."next_property_code"() TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."plan_change"("p_subscription" "uuid", "p_new_plan" integer, "p_kind" "public"."subscription_event_kind", "p_on" "date", "p_note" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."plan_change"("p_subscription" "uuid", "p_new_plan" integer, "p_kind" "public"."subscription_event_kind", "p_on" "date", "p_note" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."plan_change"("p_subscription" "uuid", "p_new_plan" integer, "p_kind" "public"."subscription_event_kind", "p_on" "date", "p_note" "text") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."plan_rename"("p_vendor" "text", "p_old_code" "text", "p_new_code" "text", "p_new_name" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."plan_rename"("p_vendor" "text", "p_old_code" "text", "p_new_code" "text", "p_new_name" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."plan_rename"("p_vendor" "text", "p_old_code" "text", "p_new_code" "text", "p_new_name" "text") TO "service_role";
 
 
 
@@ -3035,6 +3563,18 @@ GRANT ALL ON TABLE "public"."hotel_group" TO "service_role";
 
 
 
+GRANT ALL ON TABLE "public"."import_batch" TO "anon";
+GRANT ALL ON TABLE "public"."import_batch" TO "authenticated";
+GRANT ALL ON TABLE "public"."import_batch" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."import_row" TO "anon";
+GRANT ALL ON TABLE "public"."import_row" TO "authenticated";
+GRANT ALL ON TABLE "public"."import_row" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."integration" TO "anon";
 GRANT ALL ON TABLE "public"."integration" TO "authenticated";
 GRANT ALL ON TABLE "public"."integration" TO "service_role";
@@ -3161,6 +3701,12 @@ GRANT ALL ON SEQUENCE "public"."subscription_billing_snapshot_id_seq" TO "servic
 
 
 
+GRANT ALL ON TABLE "public"."subscription_event" TO "anon";
+GRANT ALL ON TABLE "public"."subscription_event" TO "authenticated";
+GRANT ALL ON TABLE "public"."subscription_event" TO "service_role";
+
+
+
 GRANT ALL ON TABLE "public"."territory" TO "anon";
 GRANT ALL ON TABLE "public"."territory" TO "authenticated";
 GRANT ALL ON TABLE "public"."territory" TO "service_role";
@@ -3174,6 +3720,12 @@ GRANT ALL ON TABLE "public"."v_gosiyaha_ready" TO "service_role";
 GRANT ALL ON TABLE "public"."v_alerts" TO "anon";
 GRANT ALL ON TABLE "public"."v_alerts" TO "authenticated";
 GRANT ALL ON TABLE "public"."v_alerts" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."v_gosiyaha_board" TO "anon";
+GRANT ALL ON TABLE "public"."v_gosiyaha_board" TO "authenticated";
+GRANT ALL ON TABLE "public"."v_gosiyaha_board" TO "service_role";
 
 
 
@@ -3232,6 +3784,18 @@ GRANT ALL ON TABLE "public"."v_property_list" TO "service_role";
 GRANT ALL ON TABLE "public"."v_property_stack" TO "anon";
 GRANT ALL ON TABLE "public"."v_property_stack" TO "authenticated";
 GRANT ALL ON TABLE "public"."v_property_stack" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."v_subscription_list" TO "anon";
+GRANT ALL ON TABLE "public"."v_subscription_list" TO "authenticated";
+GRANT ALL ON TABLE "public"."v_subscription_list" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."vendor_licence" TO "anon";
+GRANT ALL ON TABLE "public"."vendor_licence" TO "authenticated";
+GRANT ALL ON TABLE "public"."vendor_licence" TO "service_role";
 
 
 
