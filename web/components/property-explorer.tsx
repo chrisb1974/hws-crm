@@ -8,26 +8,34 @@ import Toolbar from "@/components/toolbar";
 import { downloadCsv, toCsv } from "@/lib/export-csv";
 import { t } from "@/lib/i18n";
 import {
-  DEFAULT_SORT,
-  EMPTY_FILTERS,
   PAGE_SIZE,
   SAVED_VIEWS,
   buildFacets,
   fold,
   selectRows,
+  toSearchString,
   type Filters,
   type SavedViewId,
+  type ListState,
   type Sort,
   type SortKey,
 } from "@/lib/property-list";
 import type { PropertyRow } from "@/lib/types";
 
-export default function PropertyExplorer({ rows }: { rows: PropertyRow[] }) {
-  const [view, setView] = useState<SavedViewId>("all");
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<Sort>(DEFAULT_SORT);
-  const [page, setPage] = useState(1);
+export default function PropertyExplorer({
+  rows,
+  initialState,
+}: {
+  rows: PropertyRow[];
+  /** Etat repris de l'URL : c'est ce qui permet de revenir d'une fiche
+      sans perdre la vue, les filtres, le tri ni la page. */
+  initialState: ListState;
+}) {
+  const [view, setView] = useState<SavedViewId>(initialState.view);
+  const [filters, setFilters] = useState<Filters>(initialState.filters);
+  const [query, setQuery] = useState(initialState.query);
+  const [sort, setSort] = useState<Sort>(initialState.sort);
+  const [page, setPage] = useState(initialState.page);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -44,6 +52,18 @@ export default function PropertyExplorer({ rows }: { rows: PropertyRow[] }) {
   }, [rows]);
 
   const facets = useMemo(() => buildFacets(rows), [rows]);
+
+  /* L'URL suit l'etat, sans navigation : replaceState n'ordonne aucun rendu
+     serveur et laisse le bouton « precedent » du navigateur cohérent. */
+  const search = useMemo(
+    () => toSearchString({ view, filters, query, sort, page: currentPageForUrl(page) }),
+    [view, filters, query, sort, page],
+  );
+
+  useEffect(() => {
+    const url = search ? `${window.location.pathname}?${search}` : window.location.pathname;
+    window.history.replaceState(null, "", url);
+  }, [search]);
 
   const results = useMemo(
     () => selectRows(rows, view, filters, query, sort),
@@ -197,6 +217,7 @@ export default function PropertyExplorer({ rows }: { rows: PropertyRow[] }) {
             onToggle={toggle}
             onToggleAll={toggleAllOnPage}
             showOverdue={view === "overdue"}
+            backSearch={search}
           />
         )}
       </div>
@@ -238,4 +259,9 @@ export default function PropertyExplorer({ rows }: { rows: PropertyRow[] }) {
       ) : null}
     </div>
   );
+}
+
+/** La page n'est portee dans l'URL que si elle a un sens (> 1). */
+function currentPageForUrl(page: number): number {
+  return page > 0 ? page : 1;
 }

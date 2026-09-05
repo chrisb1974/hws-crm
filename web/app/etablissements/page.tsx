@@ -1,6 +1,7 @@
 import PropertyExplorer from "@/components/property-explorer";
 import { createClient } from "@/lib/supabase/server";
 import { t } from "@/lib/i18n";
+import { fromSearchParams } from "@/lib/property-list";
 import type { PropertyRow } from "@/lib/types";
 
 // Session Supabase lue a chaque requete : rien ne doit etre prerendu.
@@ -39,8 +40,14 @@ async function fetchProperties(): Promise<{ rows: PropertyRow[]; error: string |
   return { rows, error: null };
 }
 
-export default async function PropertiesPage() {
-  const { rows, error } = await fetchProperties();
+type SearchParams = Promise<{ [key: string]: string | string[] | undefined }>;
+
+export default async function PropertiesPage({
+  searchParams,
+}: {
+  searchParams: SearchParams;
+}) {
+  const [{ rows, error }, query] = await Promise.all([fetchProperties(), searchParams]);
 
   if (error) {
     return (
@@ -65,5 +72,5 @@ export default async function PropertiesPage() {
     );
   }
 
-  return <PropertyExplorer rows={rows} />;
+  return <PropertyExplorer rows={rows} initialState={fromSearchParams(query)} />;
 }

@@ -307,3 +307,75 @@ export function selectRows(
     sort,
   );
 }
+
+/* -------------------------------------------------------------------------
+   Etat de la liste dans l'URL.
+
+   Necessaire au critere « le retour a la liste conserve les filtres actifs » :
+   sans cela, quitter la liste pour une fiche perd la selection en cours.
+   ------------------------------------------------------------------------- */
+
+export type ListState = {
+  view: SavedViewId;
+  filters: Filters;
+  query: string;
+  sort: Sort;
+  page: number;
+};
+
+const FILTER_PARAMS: [keyof Filters, string][] = [
+  ["country", "pays"],
+  ["city", "ville"],
+  ["propertyType", "type"],
+  ["status", "statut"],
+  ["vendor", "fournisseur"],
+  ["missingRole", "role"],
+  ["owner", "commercial"],
+];
+
+export function toSearchString(state: ListState): string {
+  const params = new URLSearchParams();
+  if (state.view !== "all") params.set("vue", state.view);
+  if (state.query.trim()) params.set("q", state.query.trim());
+  for (const [key, name] of FILTER_PARAMS) {
+    if (state.filters[key]) params.set(name, state.filters[key]);
+  }
+  if (state.sort.key !== DEFAULT_SORT.key) params.set("tri", state.sort.key);
+  if (state.sort.direction !== DEFAULT_SORT.direction) params.set("sens", state.sort.direction);
+  if (state.page > 1) params.set("page", String(state.page));
+  return params.toString();
+}
+
+type RawParams = Record<string, string | string[] | undefined>;
+
+function one(raw: string | string[] | undefined): string {
+  return Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "");
+}
+
+export function fromSearchParams(raw: RawParams): ListState {
+  const view = SAVED_VIEWS.some((v) => v.id === one(raw.vue))
+    ? (one(raw.vue) as SavedViewId)
+    : "all";
+
+  const filters = { ...EMPTY_FILTERS };
+  for (const [key, name] of FILTER_PARAMS) filters[key] = one(raw[name]);
+
+  const sortKey = one(raw.tri);
+  const key = ([
+    "code", "name", "city", "rooms_total", "lifecycle_status",
+    "roles_covered", "next_renewal_in_days", "overdue_since_days",
+  ] as SortKey[]).includes(sortKey as SortKey)
+    ? (sortKey as SortKey)
+    : DEFAULT_SORT.key;
+  const direction = one(raw.sens) === "desc" ? "desc" : DEFAULT_SORT.direction;
+
+  const page = Number.parseInt(one(raw.page), 10);
+
+  return {
+    view,
+    filters,
+    query: one(raw.q),
+    sort: { key, direction },
+    page: Number.isFinite(page) && page > 0 ? page : 1,
+  };
+}

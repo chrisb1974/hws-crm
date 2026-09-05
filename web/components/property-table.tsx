@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRef, type KeyboardEvent } from "react";
 import Highlight from "@/components/highlight";
 import StackSketch, { StackHeader } from "@/components/stack-sketch";
@@ -56,6 +57,7 @@ export default function PropertyTable({
   onToggle,
   onToggleAll,
   showOverdue,
+  backSearch,
 }: {
   rows: PropertyRow[];
   query: string;
@@ -66,9 +68,12 @@ export default function PropertyTable({
   onToggleAll: (checked: boolean) => void;
   /** La colonne du retard n'apparaît que dans la vue « Échéances dépassées ». */
   showOverdue: boolean;
+  /** Etat courant de la liste, transmis a la fiche pour le lien de retour. */
+  backSearch: string;
 }) {
   const bodyRef = useRef<HTMLTableSectionElement>(null);
 
+  const retour = backSearch ? `?retour=${encodeURIComponent(`?${backSearch}`)}` : "";
   const selectedOnPage = rows.filter((row) => selected.has(row.id)).length;
   const allSelected = rows.length > 0 && selectedOnPage === rows.length;
   const partial = selectedOnPage > 0 && !allSelected;
@@ -221,15 +226,22 @@ export default function PropertyTable({
               </td>
 
               <td className={CELL}>
-                <span className="whitespace-nowrap font-mono text-[12px] text-encre-75">
+                <Link
+                  href={`/etablissements/${encodeURIComponent(row.code)}${retour}`}
+                  className="whitespace-nowrap font-mono text-[12px] text-encre-75 underline-offset-2 hover:text-navy-500 hover:underline"
+                >
                   <Highlight text={row.code} query={query} />
-                </span>
+                </Link>
               </td>
 
               <td className={CELL}>
-                <span className="block truncate font-medium leading-tight text-encre-100" title={row.name}>
+                <Link
+                  href={`/etablissements/${encodeURIComponent(row.code)}${retour}`}
+                  className="block truncate font-medium leading-tight text-encre-100 underline-offset-2 hover:text-navy-500 hover:underline"
+                  title={row.name}
+                >
                   <Highlight text={row.name} query={query} />
-                </span>
+                </Link>
                 {row.group_name ? (
                   <span
                     className="block truncate text-[11px] leading-tight text-encre-45"
